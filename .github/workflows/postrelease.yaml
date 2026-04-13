@@ -13,6 +13,7 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,7 +23,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Install gowheels
-        run: go install github.com/StevenACoffman/gowheels@latest
+        run: go install github.com/StevenACoffman/gowheels@${{ github.event.release.tag_name }}
 
       - name: Build wheels and publish to PyPI
         run: gowheels pypi --name gowheels --repo ${{ github.repository }} --upload

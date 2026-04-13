@@ -5,7 +5,7 @@ Releases are published to GitHub using [GoReleaser](https://goreleaser.com). The
 ## What GoReleaser does
 
 - Runs `go mod tidy` and `go generate ./...` before building
-- Builds binaries for Linux, macOS, and Windows on `amd64`, `arm64`, and `386`
+- Builds binaries for Linux, macOS, and Windows on `amd64` and `arm64`
 - Packages binaries as `.tar.gz` (`.zip` on Windows)
 - Generates a changelog from commits since the previous tag (excluding `docs:` and `test:` prefixes)
 - Creates a GitHub release and uploads all artifacts
