@@ -3,7 +3,6 @@ package pypi
 import (
 	"bytes"
 	"context"
-	"crypto/md5"  //nolint:gosec // MD5 is required by the PyPI legacy upload API
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -13,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 
+	"golang.org/x/crypto/blake2b"
+
 	"github.com/StevenACoffman/gowheels/internal/wheel"
 )
 
@@ -21,13 +22,22 @@ const defaultPyPIURL = "https://upload.pypi.org/legacy/"
 // Upload sends a built wheel to PyPI using the legacy multipart upload API.
 // token is the value returned by MintToken (GOWHEELS_PYPI_TOKEN or OIDC-minted).
 // pypiURL defaults to the public PyPI endpoint when empty.
+//
+// Digests follow what twine 5.x sends for Metadata-Version 2.4:
+//   - sha2_digest       — SHA-256 hex (the field PyPI stores as the primary hash)
+//   - blake2_256_digest — BLAKE2b-256 hex (required alongside sha2 for modern uploads)
+//
+// MD5 is omitted: PyPI deprecated it and modern warehouse validation ignores it.
 func Upload(ctx context.Context, w wheel.BuiltWheel, token, pypiURL string) error {
 	if pypiURL == "" {
 		pypiURL = defaultPyPIURL
 	}
 
-	sha256Sum := sha256.Sum256(w.Data)
-	md5Sum := md5.Sum(w.Data) //nolint:gosec
+	sha2Sum := sha256.Sum256(w.Data)
+	blake2Sum, err := blake2b256(w.Data)
+	if err != nil {
+		return fmt.Errorf("computing blake2b-256 digest: %w", err)
+	}
 
 	pkgName, version, err := parseWheelFilename(w.Filename)
 	if err != nil {
@@ -46,10 +56,10 @@ func Upload(ctx context.Context, w wheel.BuiltWheel, token, pypiURL string) erro
 		{"pyversion", "py3"},
 		{"protocol_version", "1"},
 		{"requires_python", ">=3.9"},
-		// Send both digest field names for maximum compatibility:
-		// sha256_digest is the modern spelling; md5_digest for legacy servers.
-		{"sha256_digest", hex.EncodeToString(sha256Sum[:])},
-		{"md5_digest", hex.EncodeToString(md5Sum[:])},
+		// sha2_digest is the canonical field name PyPI stores for SHA-256.
+		// blake2_256_digest is required for Metadata-Version 2.4 uploads.
+		{"sha2_digest", hex.EncodeToString(sha2Sum[:])},
+		{"blake2_256_digest", hex.EncodeToString(blake2Sum)},
 	}
 	for _, f := range fields {
 		if err := mw.WriteField(f[0], f[1]); err != nil {
@@ -85,6 +95,16 @@ func Upload(ctx context.Context, w wheel.BuiltWheel, token, pypiURL string) erro
 		return nil
 	}
 	return errors.New(uploadError(resp.StatusCode))
+}
+
+// blake2b256 returns the BLAKE2b-256 digest of data.
+func blake2b256(data []byte) ([]byte, error) {
+	h, err := blake2b.New256(nil)
+	if err != nil {
+		return nil, err
+	}
+	h.Write(data)
+	return h.Sum(nil), nil
 }
 
 // parseWheelFilename extracts package name and version from a wheel filename

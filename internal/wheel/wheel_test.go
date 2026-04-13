@@ -264,6 +264,122 @@ func checkRecordHashes(t *testing.T, zr *zip.Reader, record string) {
 	}
 }
 
+// TestValidateLicenseExpression checks valid and invalid SPDX expressions.
+func TestValidateLicenseExpression(t *testing.T) {
+	valid := []string{
+		"MIT",
+		"Apache-2.0",
+		"MIT OR Apache-2.0",
+		"GPL-2.0-only WITH Classpath-exception-2.0",
+		"(MIT OR Apache-2.0) AND GPL-2.0-only",
+		"LicenseRef-scancode-public-domain",
+	}
+	for _, expr := range valid {
+		t.Run("valid/"+expr, func(t *testing.T) {
+			if err := wheel.ValidateLicenseExpression(expr); err != nil {
+				t.Errorf("ValidateLicenseExpression(%q) returned unexpected error: %v", expr, err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		expr string
+		desc string
+	}{
+		{"", "empty"},
+		{" MIT", "leading whitespace"},
+		{"MIT ", "trailing whitespace"},
+		{"MIT,Apache-2.0", "comma not allowed"},
+		{"MIT/Apache-2.0", "slash not allowed"},
+		{"MIT_OR_Apache", "underscore not allowed"},
+		{"MIT and Apache-2.0", "lowercase 'and'"},
+		{"MIT or Apache-2.0", "lowercase 'or'"},
+		{"GPL-2.0-only with Classpath-exception-2.0", "lowercase 'with'"},
+	}
+	for _, tt := range invalid {
+		t.Run("invalid/"+tt.desc, func(t *testing.T) {
+			if err := wheel.ValidateLicenseExpression(tt.expr); err == nil {
+				t.Errorf("ValidateLicenseExpression(%q) returned nil, want error (%s)", tt.expr, tt.desc)
+			}
+		})
+	}
+}
+
+// TestBuildAll_SummaryNewline verifies that a multi-line Summary is rejected.
+func TestBuildAll_SummaryNewline(t *testing.T) {
+	outDir := t.TempDir()
+	plat, _ := platforms.Lookup("darwin", "arm64")
+	binaries := []source.Binary{
+		{Platform: plat, Data: []byte("bin"), Filename: "tool"},
+	}
+
+	for _, summary := range []string{"line1\nline2", "line1\r\nline2"} {
+		cfg := wheel.Config{
+			RawName:    "tool",
+			Version:    "1.0.0",
+			Summary:    summary,
+			ReadmePath: "-",
+			OutputDir:  outDir,
+		}
+		_, err := wheel.BuildAll(cfg, binaries)
+		if err == nil {
+			t.Errorf("BuildAll with multi-line Summary %q returned nil, want error", summary)
+		}
+	}
+}
+
+// TestBuildAll_Metadata24Fields verifies that METADATA uses Metadata-Version 2.4
+// fields (License-Expression, Project-URL) and not deprecated ones (License:, Home-page:).
+func TestBuildAll_Metadata24Fields(t *testing.T) {
+	outDir := t.TempDir()
+	plat, _ := platforms.Lookup("darwin", "arm64")
+	binaries := []source.Binary{
+		{Platform: plat, Data: []byte("bin"), Filename: "tool"},
+	}
+
+	cfg := wheel.Config{
+		RawName:     "tool",
+		Version:     "1.0.0",
+		Summary:     "A test tool",
+		URL:         "https://example.com/tool",
+		LicenseExpr: "MIT",
+		ReadmePath:  "-",
+		OutputDir:   outDir,
+	}
+
+	wheels, err := wheel.BuildAll(cfg, binaries)
+	if err != nil {
+		t.Fatalf("BuildAll: %v", err)
+	}
+	if len(wheels) == 0 {
+		t.Fatal("no wheels built")
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(wheels[0].Data), int64(len(wheels[0].Data)))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	metadata := readZipFile(zr, "METADATA")
+
+	// Required Metadata-Version 2.4 fields.
+	for _, want := range []string{
+		"Metadata-Version: 2.4",
+		"License-Expression: MIT",
+		"Project-URL: Repository, https://example.com/tool",
+	} {
+		if !strings.Contains(metadata, want) {
+			t.Errorf("METADATA missing %q\nContent:\n%s", want, metadata)
+		}
+	}
+
+	// Deprecated fields must NOT appear.
+	for _, banned := range []string{"License: ", "Home-page: "} {
+		if strings.Contains(metadata, banned) {
+			t.Errorf("METADATA contains deprecated field %q\nContent:\n%s", banned, metadata)
+		}
+	}
+}
+
 func readZipFile(zr *zip.Reader, suffix string) string {
 	for _, f := range zr.File {
 		if strings.HasSuffix(f.Name, suffix) {

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	_ "embed"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"maps"
@@ -50,6 +51,46 @@ type BuiltWheel struct {
 
 var normalizeRe = regexp.MustCompile(`[-._]+`)
 
+// spdxPermitted matches the complete set of characters allowed in an SPDX
+// expression: letters, digits, hyphens, dots, +, spaces, and parentheses.
+var spdxPermitted = regexp.MustCompile(`^[a-zA-Z0-9\-\.+() ]+$`)
+
+// spdxLowerOp detects lowercase boolean operators (and/or/with) as whole words,
+// which are invalid in SPDX — they must be uppercase (AND, OR, WITH).
+var spdxLowerOp = regexp.MustCompile(`\b(and|or|with)\b`)
+
+// ValidateLicenseExpression reports whether expr is a well-formed SPDX
+// expression for use in the Metadata-Version 2.4 License-Expression field.
+//
+// It validates the character set and operator casing. It does not verify that
+// individual identifiers exist in the SPDX license list — pass a clearly
+// incorrect value like "Apache 2.0" (instead of "Apache-2.0") and this will
+// not catch the wrong identifier, but it will catch malformed expressions such
+// as those containing commas, slashes, underscores, or lowercase operators.
+func ValidateLicenseExpression(expr string) error {
+	if expr == "" {
+		return errors.New("License-Expression must not be empty")
+	}
+	if expr != strings.TrimSpace(expr) {
+		return errors.New("License-Expression must not have leading or trailing whitespace")
+	}
+	if !spdxPermitted.MatchString(expr) {
+		return fmt.Errorf(
+			"License-Expression %q contains characters not permitted in SPDX expressions "+
+				"(allowed: letters, digits, -, ., +, spaces, parentheses)",
+			expr,
+		)
+	}
+	if loc := spdxLowerOp.FindStringIndex(expr); loc != nil {
+		op := expr[loc[0]:loc[1]]
+		return fmt.Errorf(
+			"License-Expression %q: SPDX operator %q must be uppercase (%s)",
+			expr, op, strings.ToUpper(op),
+		)
+	}
+	return nil
+}
+
 // NormalizeName applies PEP 625 / PEP 427 name normalisation: lowercase and
 // run of [-._]+ replaced by a single underscore.
 func NormalizeName(name string) string {
@@ -60,6 +101,16 @@ func NormalizeName(name string) string {
 // with two wheel tags (manylinux + musllinux) produces two wheels from the
 // same bytes without re-reading the source.
 func BuildAll(cfg Config, binaries []source.Binary) ([]BuiltWheel, error) {
+	// Validate Metadata-Version 2.4 fields before doing any filesystem work.
+	if cfg.LicenseExpr != "" {
+		if err := ValidateLicenseExpression(cfg.LicenseExpr); err != nil {
+			return nil, fmt.Errorf("--license-expr: %w", err)
+		}
+	}
+	if strings.ContainsAny(cfg.Summary, "\r\n") {
+		return nil, errors.New("--summary: must be a single line (Metadata-Version 2.4 §2.1.5)")
+	}
+
 	if cfg.OutputDir == "" {
 		cfg.OutputDir = "dist"
 	}
