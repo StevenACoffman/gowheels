@@ -19,7 +19,7 @@ import (
 const defaultPyPIURL = "https://upload.pypi.org/legacy/"
 
 // Upload sends a built wheel to PyPI using the legacy multipart upload API.
-// token is the value returned by MintToken (PYPI_TOKEN or OIDC-minted).
+// token is the value returned by MintToken (GOWHEELS_PYPI_TOKEN or OIDC-minted).
 // pypiURL defaults to the public PyPI endpoint when empty.
 func Upload(ctx context.Context, w wheel.BuiltWheel, token, pypiURL string) error {
 	if pypiURL == "" {

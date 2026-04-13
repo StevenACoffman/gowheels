@@ -19,7 +19,23 @@ on:
 jobs:
   backend-tests:
     name: "Go Build/Test"
-    uses: ./.github/workflows/partial-tests.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+          check-latest: true
+          cache-dependency-path: "**/*.sum"
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
 
   tag:
     name: "Publish Tag"

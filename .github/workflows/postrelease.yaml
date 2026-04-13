@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   pypi-publish:
@@ -28,4 +29,4 @@ jobs:
       - name: Build wheels and publish to PyPI
         run: gowheels pypi --name gowheels --repo ${{ github.repository }} --upload
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOWHEELS_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

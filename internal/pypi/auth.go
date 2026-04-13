@@ -37,7 +37,7 @@ func MintToken(ctx context.Context, pypiToken string) (string, error) {
 	if requestURL == "" || requestToken == "" {
 		return "", fmt.Errorf(
 			"gowheels: no PyPI credentials found\n" +
-				"  option 1: set PYPI_TOKEN to a PyPI API token\n" +
+				"  option 1: set GOWHEELS_PYPI_TOKEN to a PyPI API token\n" +
 				"  option 2: add 'id-token: write' to your workflow permissions and\n" +
 				"            configure a trusted publisher at https://pypi.org/manage/account/publishing/",
 		)

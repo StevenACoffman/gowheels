@@ -129,7 +129,7 @@ Binary source (--mode or inferred):
   build     compile from Go source (inferred when --package or --mod-dir is set)
 
 Authentication (--upload):
-  PYPI_TOKEN env var takes precedence. When absent, GitHub Actions OIDC is used
+  GOWHEELS_PYPI_TOKEN env var takes precedence. When absent, GitHub Actions OIDC is used
   (requires id-token: write permission and a configured trusted publisher).
 
 Examples:

@@ -36,10 +36,25 @@ Requires Go 1.23 or later.
 
 These flags are accepted by all subcommands:
 
-| Flag | Description |
-|------|-------------|
-| `--dry-run` | Print what would happen without writing files or uploading |
-| `--debug` | Enable debug-level structured logging |
+| Flag | Env var | Description |
+|------|---------|-------------|
+| `--dry-run` | `GOWHEELS_DRY_RUN` | Print what would happen without writing files or uploading |
+| `--debug` | `GOWHEELS_DEBUG` | Enable debug-level structured logging |
+
+## Environment variables
+
+Every flag can be set via an environment variable. The mapping rule is: prepend `GOWHEELS_`, uppercase the flag name, and replace dashes with underscores. Flags supplied on the command line always take precedence over environment variables.
+
+The most commonly useful env vars:
+
+| Env var | Flag | Notes |
+|---------|------|-------|
+| `GOWHEELS_PYPI_TOKEN` | `--pypi-token` | PyPI API token; preferred over OIDC for local runs |
+| `GOWHEELS_GITHUB_TOKEN` | `--github-token` | GitHub token; avoids API rate limits in release mode |
+| `GOWHEELS_PYPI_URL` | `--pypi-url` | Override the PyPI upload endpoint (e.g. TestPyPI) |
+| `GOWHEELS_VERSION` | `--version` | Useful in CI to avoid running `git describe` |
+| `GOWHEELS_DRY_RUN` | `--dry-run` | Set to any non-empty value to enable dry-run mode |
+| `GOWHEELS_DEBUG` | `--debug` | Set to any non-empty value to enable debug logging |
 
 ---
 
@@ -134,7 +149,7 @@ A single static Linux binary produces **both** a manylinux and a musllinux wheel
 
 When `--upload` is set, gowheels authenticates using the first available credential:
 
-1. **`PYPI_TOKEN` environment variable** — a [PyPI API token](https://pypi.org/manage/account/token/) with upload scope for the package
+1. **`--pypi-token` flag or `GOWHEELS_PYPI_TOKEN` env var** — a [PyPI API token](https://pypi.org/manage/account/token/) with upload scope for the package. The env var is read automatically; no `--pypi-token` flag is needed when `GOWHEELS_PYPI_TOKEN` is set.
 2. **GitHub Actions OIDC** — requires `id-token: write` permission in the workflow and a [trusted publisher](https://docs.pypi.org/trusted-publishers/) configured on PyPI (no token needed)
 
 ### GitHub Actions workflow
@@ -148,7 +163,7 @@ jobs:
   publish-pypi:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write   # enables PyPI OIDC — no PYPI_TOKEN secret required
+      id-token: write   # enables PyPI OIDC — no GOWHEELS_PYPI_TOKEN secret required
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -156,6 +171,8 @@ jobs:
         with: { go-version: stable }
       - run: go install github.com/StevenACoffman/gowheels@latest
       - name: Publish wheels to PyPI
+        env:
+          GOWHEELS_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gowheels pypi \
             --name mytool \
@@ -168,7 +185,7 @@ jobs:
 To use an API token instead of OIDC, remove `id-token: write` and add:
 ```yaml
 env:
-  PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+  GOWHEELS_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
 ```
 
 ### All flags
@@ -201,7 +218,8 @@ env:
 | `--platforms` | all | Comma-separated `os/arch` filter, e.g. `linux/amd64,darwin/arm64` |
 | `--output` | `dist` | Output directory for `.whl` files |
 | `--upload` | | Upload wheels to PyPI after building |
-| `--pypi-url` | PyPI | PyPI upload endpoint (for TestPyPI: `https://test.pypi.org/legacy/`) |
+| `--pypi-url` | PyPI | PyPI upload endpoint (for TestPyPI: `https://test.pypi.org/legacy/`); env var: `GOWHEELS_PYPI_URL` |
+| `--pypi-token` | | PyPI API token; env var: `GOWHEELS_PYPI_TOKEN` (preferred in CI) |
 | `--mode` | inferred | Binary source: `release`, `local`, or `build` |
 
 **Release mode** (`--repo` infers this mode)
@@ -211,6 +229,7 @@ env:
 | `--repo` | | GitHub repository in `owner/name` format |
 | `--assets` | | Comma-separated explicit asset name overrides |
 | `--cache` | `$XDG_CACHE_HOME/gowheels` | Local cache directory for downloaded archives |
+| `--github-token` | | GitHub personal access token; env var: `GOWHEELS_GITHUB_TOKEN` (avoids API rate limits) |
 
 **Local mode** (`--artifact` infers this mode)
 
