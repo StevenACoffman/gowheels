@@ -11,32 +11,34 @@ import (
 	"github.com/peterbourgon/ff/v4"
 	"github.com/peterbourgon/ff/v4/ffhelp"
 
+	"github.com/StevenACoffman/gowheels/cmd/man"
 	"github.com/StevenACoffman/gowheels/cmd/npm"
 	"github.com/StevenACoffman/gowheels/cmd/pypi"
 	"github.com/StevenACoffman/gowheels/cmd/root"
 	"github.com/StevenACoffman/gowheels/cmd/version"
 )
 
-// Run parses args and dispatches to the matching subcommand.
+// Run parses args and dispatches to the matching command.
 // args must not include the executable name (pass os.Args[1:]).
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	r := root.New(stdin, stdout, stderr)
 	version.New(r)
 	pypi.New(r)
 	npm.New(r)
+	man.New(r)
 	// register new commands here
 
 	if err := r.Command.Parse(args); err != nil {
-		fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
+		_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command))
 		return fmt.Errorf("parse: %w", err)
 	}
 
 	if err := r.Command.Run(ctx); err != nil {
-		// Don't print usage on ErrNoExec (no subcommand given) or ExitError
-		// (command already reported its own outcome).
+		// Don't print usage help for ErrNoExec (no subcommand given) or
+		// ExitError (command already reported its own outcome).
 		var exitErr root.ExitError
 		if !errors.Is(err, ff.ErrNoExec) && !errors.As(err, &exitErr) {
-			fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
+			_, _ = fmt.Fprintf(stderr, "\n%s\n", ffhelp.Command(r.Command.GetSelected()))
 		}
 		return err
 	}
