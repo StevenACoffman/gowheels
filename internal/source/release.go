@@ -15,10 +15,10 @@ import (
 	"github.com/StevenACoffman/gowheels/internal/platforms"
 )
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
-
 // maxAPIResponseBytes caps GitHub API response reads (release metadata is never large).
 const maxAPIResponseBytes = 4 << 20 // 4 MB
+
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // ReleaseSource downloads binaries from a GitHub Release, extracts them from
 // their GoReleaser-produced archives, and caches archives on disk.
@@ -31,13 +31,26 @@ type ReleaseSource struct {
 	stdout   io.Writer // progress output
 }
 
+type ghRelease struct {
+	TagName string    `json:"tag_name"`
+	Assets  []ghAsset `json:"assets"`
+}
+
+type ghAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
 // NewReleaseSource creates a ReleaseSource. repo must be "owner/name". version
 // may be a full tag (e.g. "v1.2.3") or "" / "latest" to fetch the latest
 // release. assets is a comma-separated list of explicit asset names; when
 // empty, GoReleaser naming conventions are used. cacheDir defaults to
 // $XDG_CACHE_HOME/gowheels when empty. token is an optional GitHub personal
 // access token. stdout receives progress output; pass io.Discard to suppress.
-func NewReleaseSource(repo, version, assets, cacheDir, token string, stdout io.Writer) *ReleaseSource {
+func NewReleaseSource(
+	repo, version, assets, cacheDir, token string,
+	stdout io.Writer,
+) *ReleaseSource {
 	if cacheDir == "" {
 		cacheDir = defaultCacheDir()
 	}
@@ -61,20 +74,14 @@ func NewReleaseSource(repo, version, assets, cacheDir, token string, stdout io.W
 	}
 }
 
-type ghRelease struct {
-	TagName string    `json:"tag_name"`
-	Assets  []ghAsset `json:"assets"`
-}
-
-type ghAsset struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-}
-
 // Resolve fetches the GitHub release, matches each platform to an archive
 // asset, downloads and extracts the binary, and returns one Binary per unique
 // os/arch pair.
-func (s *ReleaseSource) Resolve(ctx context.Context, name string, plats []platforms.Platform) ([]Binary, error) {
+func (s *ReleaseSource) Resolve(
+	ctx context.Context,
+	name string,
+	plats []platforms.Platform,
+) ([]Binary, error) {
 	release, err := s.fetchRelease(ctx)
 	if err != nil {
 		return nil, err
@@ -135,11 +142,16 @@ func (s *ReleaseSource) Resolve(ctx context.Context, name string, plats []platfo
 // Otherwise we try GoReleaser naming conventions:
 //  1. {name}_{version}_{OS}_{Arch}.{ext}  (primary)
 //  2. {name}_{OS}_{Arch}.{ext}            (fallback, no version)
-func (s *ReleaseSource) matchAsset(assets []ghAsset, name, version string, p platforms.Platform) (string, error) {
+func (s *ReleaseSource) matchAsset(
+	assets []ghAsset,
+	name, version string,
+	p platforms.Platform,
+) (string, error) {
 	if len(s.assets) > 0 {
 		for _, assetName := range s.assets {
 			n := strings.ToLower(assetName)
-			if strings.Contains(n, strings.ToLower(p.GoReleaserOS())) && strings.Contains(n, strings.ToLower(p.GoReleaserArch())) {
+			if strings.Contains(n, strings.ToLower(p.GoReleaserOS())) &&
+				strings.Contains(n, strings.ToLower(p.GoReleaserArch())) {
 				return assetName, nil
 			}
 		}
@@ -166,7 +178,13 @@ func (s *ReleaseSource) matchAsset(assets []ghAsset, name, version string, p pla
 		}
 	}
 
-	return "", fmt.Errorf("no release asset found for %s/%s (tried %q and %q)", p.GOOS, p.GOARCH, primary, fallback)
+	return "", fmt.Errorf(
+		"no release asset found for %s/%s (tried %q and %q)",
+		p.GOOS,
+		p.GOARCH,
+		primary,
+		fallback,
+	)
 }
 
 func (s *ReleaseSource) fetchRelease(ctx context.Context) (*ghRelease, error) {
@@ -199,7 +217,7 @@ func (s *ReleaseSource) fetchRelease(ctx context.Context) (*ghRelease, error) {
 func (s *ReleaseSource) ghGet(ctx context.Context, url string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building GitHub API request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	if s.token != "" {
@@ -208,13 +226,13 @@ func (s *ReleaseSource) ghGet(ctx context.Context, url string) ([]byte, error) {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sending GitHub API request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseBytes))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading GitHub API response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GitHub API %s returned %d: %s", url, resp.StatusCode, string(body))
@@ -235,7 +253,7 @@ func (s *ReleaseSource) download(ctx context.Context, url string) ([]byte, error
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("building download request: %w", err)
 	}
 	if s.token != "" {
 		req.Header.Set("Authorization", "Bearer "+s.token)
@@ -243,9 +261,9 @@ func (s *ReleaseSource) download(ctx context.Context, url string) ([]byte, error
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sending download request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d downloading %s", resp.StatusCode, url)
@@ -253,7 +271,7 @@ func (s *ReleaseSource) download(ctx context.Context, url string) ([]byte, error
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading download response: %w", err)
 	}
 
 	// Write to cache (best-effort)

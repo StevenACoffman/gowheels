@@ -48,7 +48,11 @@ func TestNormalize(t *testing.T) {
 
 		// Completely invalid
 		{"not-a-version", "", true},
-		{"v1.2", "", true},  // only two components; not matched by semver pre-re or PEP 440 (needs 3 parts for pure semver)
+		{
+			"v1.2",
+			"",
+			true,
+		}, // only two components; not matched by semver pre-re or PEP 440 (needs 3 parts for pure semver)
 		{"1.2.3-", "", true},
 	}
 

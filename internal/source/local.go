@@ -31,7 +31,10 @@ func NewLocalSource(entries []string) (*LocalSource, error) {
 		}
 		goos, goarch, ok := strings.Cut(platform, "/")
 		if !ok {
-			errs = append(errs, fmt.Sprintf("invalid --artifact %q: platform must be os/arch", entry))
+			errs = append(
+				errs,
+				fmt.Sprintf("invalid --artifact %q: platform must be os/arch", entry),
+			)
 			continue
 		}
 		key := goos + "/" + goarch
@@ -55,7 +58,11 @@ func NewLocalSource(entries []string) (*LocalSource, error) {
 // Resolve reads each requested platform's binary from the local filesystem.
 // Duplicate os/arch pairs (caused by multi-tag Linux platforms) are resolved
 // only once.
-func (s *LocalSource) Resolve(_ context.Context, name string, plats []platforms.Platform) ([]Binary, error) {
+func (s *LocalSource) Resolve(
+	_ context.Context,
+	name string,
+	plats []platforms.Platform,
+) ([]Binary, error) {
 	seen := make(map[string]bool)
 	var result []Binary
 	var errs []string
@@ -83,7 +90,7 @@ func (s *LocalSource) Resolve(_ context.Context, name string, plats []platforms.
 			continue
 		}
 		// Check executable bit when building on Unix for a non-Windows target.
-		if runtime.GOOS != "windows" && p.GOOS != "windows" && info.Mode()&0111 == 0 {
+		if runtime.GOOS != "windows" && p.GOOS != "windows" && info.Mode()&0o111 == 0 {
 			errs = append(errs, fmt.Sprintf("--artifact %s: file is not executable", key))
 			continue
 		}

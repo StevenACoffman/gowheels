@@ -2,6 +2,7 @@
 package version
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -66,11 +67,11 @@ func Normalize(v string) (string, error) {
 // Resolve returns a normalized PEP 440 version from an explicit string or,
 // when explicit is empty, from the current git tag via
 // `git describe --tags --exact-match`.
-func Resolve(explicit string) (string, error) {
+func Resolve(ctx context.Context, explicit string) (string, error) {
 	if explicit != "" {
 		return Normalize(explicit)
 	}
-	out, err := exec.Command("git", "describe", "--tags", "--exact-match").Output()
+	out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--exact-match").Output()
 	if err != nil {
 		return "", fmt.Errorf(
 			"--version not provided and no exact git tag found\n"+

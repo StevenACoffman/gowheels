@@ -15,6 +15,16 @@ import (
 	internver "github.com/StevenACoffman/gowheels/internal/version"
 )
 
+// npmPlatformMap maps goos/goarch to npm OS/CPU/suffix strings.
+var npmPlatformMap = map[string][3]string{
+	"linux/amd64":   {"linux", "x64", "linux-x64"},
+	"linux/arm64":   {"linux", "arm64", "linux-arm64"},
+	"darwin/amd64":  {"darwin", "x64", "darwin-x64"},
+	"darwin/arm64":  {"darwin", "arm64", "darwin-arm64"},
+	"windows/amd64": {"win32", "x64", "win32-x64"},
+	"windows/arm64": {"win32", "arm64", "win32-arm64"},
+}
+
 // Config holds the configuration for the npm subcommand.
 type Config struct {
 	*root.Config
@@ -42,15 +52,43 @@ func New(parent *root.Config) *Config {
 	cfg.Flags = ff.NewFlagSet("npm").SetParent(parent.Flags)
 
 	cfg.Flags.StringVar(&cfg.Name, 0, "name", "", "binary name (required)")
-	cfg.Flags.StringVar(&cfg.Org, 0, "org", "", "npm org scope, e.g. myorg → @myorg/name-linux-x64 (required)")
-	cfg.Flags.StringListVar(&cfg.Artifacts, 0, "artifact", "artifact mapping os/arch:path, repeatable (required)")
-	cfg.Flags.StringVar(&cfg.Version, 0, "version", "", "package version (semver; default: git describe --tags --exact-match)")
+	cfg.Flags.StringVar(
+		&cfg.Org,
+		0,
+		"org",
+		"",
+		"npm org scope, e.g. myorg → @myorg/name-linux-x64 (required)",
+	)
+	cfg.Flags.StringListVar(
+		&cfg.Artifacts,
+		0,
+		"artifact",
+		"artifact mapping os/arch:path, repeatable (required)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.Version,
+		0,
+		"version",
+		"",
+		"package version (semver; default: git describe --tags --exact-match)",
+	)
 	cfg.Flags.StringVar(&cfg.Summary, 0, "summary", "", "one-line description")
 	cfg.Flags.StringVar(&cfg.License, 0, "license", "", "license identifier (e.g. MIT)")
 	cfg.Flags.StringVar(&cfg.Tag, 0, "tag", "latest", "dist-tag to publish under")
-	cfg.Flags.BoolVar(&cfg.Provenance, 0, "provenance", "publish with npm provenance attestation (requires CI)")
+	cfg.Flags.BoolVar(
+		&cfg.Provenance,
+		0,
+		"provenance",
+		"publish with npm provenance attestation (requires CI)",
+	)
 	cfg.Flags.StringVar(&cfg.Repository, 0, "repository", "", "repository URL for package.json")
-	cfg.Flags.StringVar(&cfg.ReadmePath, 0, "readme", "", "path to README file (default: auto-detect)")
+	cfg.Flags.StringVar(
+		&cfg.ReadmePath,
+		0,
+		"readme",
+		"",
+		"path to README file (default: auto-detect)",
+	)
 	cfg.Flags.BoolVar(&cfg.NoReadme, 0, "no-readme", "disable README auto-detection")
 
 	cfg.Command = &ff.Command{
@@ -77,16 +115,6 @@ Example:
 	return &cfg
 }
 
-// npmPlatformMap maps goos/goarch to npm OS/CPU/suffix strings.
-var npmPlatformMap = map[string][3]string{
-	"linux/amd64":   {"linux", "x64", "linux-x64"},
-	"linux/arm64":   {"linux", "arm64", "linux-arm64"},
-	"darwin/amd64":  {"darwin", "x64", "darwin-x64"},
-	"darwin/arm64":  {"darwin", "arm64", "darwin-arm64"},
-	"windows/amd64": {"win32", "x64", "win32-x64"},
-	"windows/arm64": {"win32", "arm64", "win32-arm64"},
-}
-
 func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	if cfg.Name == "" {
 		return errors.New("--name is required")
@@ -99,9 +127,9 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	}
 
 	// Resolve version.
-	ver, err := internver.Resolve(cfg.Version)
+	ver, err := internver.Resolve(ctx, cfg.Version)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolving version: %w", err)
 	}
 
 	// Parse artifacts into npm.Artifact values.
@@ -152,6 +180,8 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 		Stdout:     cfg.Stdout,
 	}
 
-	return npm.Publish(ctx, npmCfg)
+	if err := npm.Publish(ctx, npmCfg); err != nil {
+		return fmt.Errorf("npm publish: %w", err)
+	}
+	return nil
 }
-

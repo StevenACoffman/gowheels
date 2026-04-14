@@ -29,7 +29,7 @@ func extractFromTarGz(data []byte, name string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("gzip: %w", err)
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 
 	tr := tar.NewReader(gr)
 	for {
@@ -41,7 +41,11 @@ func extractFromTarGz(data []byte, name string) ([]byte, error) {
 			return nil, fmt.Errorf("tar: %w", err)
 		}
 		if filepath.Base(hdr.Name) == name {
-			return io.ReadAll(tr)
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				return nil, fmt.Errorf("reading tar entry %s: %w", hdr.Name, err)
+			}
+			return data, nil
 		}
 	}
 	return nil, fmt.Errorf("binary %q not found in tar.gz archive", name)
@@ -58,8 +62,12 @@ func extractFromZip(data []byte, name string) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("zip entry %s: %w", f.Name, err)
 			}
-			defer rc.Close()
-			return io.ReadAll(rc)
+			defer func() { _ = rc.Close() }()
+			data, err := io.ReadAll(rc)
+			if err != nil {
+				return nil, fmt.Errorf("reading zip entry %s: %w", f.Name, err)
+			}
+			return data, nil
 		}
 	}
 	return nil, fmt.Errorf("binary %q not found in zip archive", name)

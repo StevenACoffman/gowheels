@@ -245,6 +245,25 @@ linters:
       - path: main\.go$
         linters:
           - forbidigo
+          - revive  # deep-exit: main.go legitimately calls os.Exit
+
+      # Internal packages and cmd/npm use intentional package-level vars (http clients, platform maps).
+      - path: (internal/(npm|pypi|source|version|platforms)|cmd/npm)/
+        linters:
+          - gochecknoglobals
+
+      # cmd/npm and cmd/pypi New() functions are long due to flag registration, not logic.
+      # cmd/pypi exec() is long because it orchestrates many distinct steps.
+      # wheel.go buildZip() is long due to the zip-entry write loop and RECORD assembly.
+      - path: (cmd/(npm|pypi)/|internal/wheel/wheel)
+        linters:
+          - funlen
+
+      # fmt.Fprintf/Fprint to io.Writer (Stdout/Stderr) virtually never fails;
+      # checking the error at every call site would be pure noise.
+      - text: "Error return value of `fmt.Fprint"
+        linters:
+          - errcheck
 
       # cmd/cmd.go dispatcher writes to io.Writer locals, not global stdout.
       - path: cmd/cmd\.go$

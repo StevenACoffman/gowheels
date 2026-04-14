@@ -12,8 +12,18 @@ func TestLookup(t *testing.T) {
 		wantErr      bool
 		wantTags     []string
 	}{
-		{"linux", "amd64", false, []string{"manylinux_2_17_x86_64.manylinux2014_x86_64", "musllinux_1_2_x86_64"}},
-		{"linux", "arm64", false, []string{"manylinux_2_17_aarch64.manylinux2014_aarch64", "musllinux_1_2_aarch64"}},
+		{
+			"linux",
+			"amd64",
+			false,
+			[]string{"manylinux_2_17_x86_64.manylinux2014_x86_64", "musllinux_1_2_x86_64"},
+		},
+		{
+			"linux",
+			"arm64",
+			false,
+			[]string{"manylinux_2_17_aarch64.manylinux2014_aarch64", "musllinux_1_2_aarch64"},
+		},
 		{"darwin", "amd64", false, []string{"macosx_10_9_x86_64"}},
 		{"darwin", "arm64", false, []string{"macosx_11_0_arm64"}},
 		{"windows", "amd64", false, []string{"win_amd64"}},
@@ -26,7 +36,13 @@ func TestLookup(t *testing.T) {
 		t.Run(tt.goos+"/"+tt.goarch, func(t *testing.T) {
 			p, err := platforms.Lookup(tt.goos, tt.goarch)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("Lookup(%q, %q) error = %v, wantErr %v", tt.goos, tt.goarch, err, tt.wantErr)
+				t.Fatalf(
+					"Lookup(%q, %q) error = %v, wantErr %v",
+					tt.goos,
+					tt.goarch,
+					err,
+					tt.wantErr,
+				)
 			}
 			if tt.wantErr {
 				return

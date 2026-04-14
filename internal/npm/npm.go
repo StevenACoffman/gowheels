@@ -19,23 +19,23 @@ import (
 	"time"
 )
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
-
-//go:embed wrapper.js
-var wrapperJS string
-
 const (
 	registryPollInterval = 5 * time.Second
 	registryPollTimeout  = 2 * time.Minute
 )
 
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+//go:embed wrapper.js
+var wrapperJS string
+
 // Artifact is a resolved binary file path for one os/arch pair.
 type Artifact struct {
-	GOOS         string
-	GOARCH       string
-	Path         string
-	NpmOS        string // e.g. "linux"
-	NpmCPU       string // e.g. "x64"
+	GOOS          string
+	GOARCH        string
+	Path          string
+	NpmOS         string // e.g. "linux"
+	NpmCPU        string // e.g. "x64"
 	PackageSuffix string // e.g. "linux-x64"
 }
 
@@ -53,6 +53,24 @@ type Config struct {
 	ReadmePath string
 	Repository string
 	Stdout     io.Writer
+}
+
+type builtPackage struct {
+	dir  string
+	name string
+}
+
+type packageJSON struct {
+	Name         string            `json:"name"`
+	Version      string            `json:"version"`
+	Description  string            `json:"description,omitempty"`
+	License      string            `json:"license,omitempty"`
+	Repository   string            `json:"repository,omitempty"`
+	OS           []string          `json:"os,omitempty"`
+	CPU          []string          `json:"cpu,omitempty"`
+	Files        []string          `json:"files"`
+	Bin          map[string]string `json:"bin,omitempty"`
+	OptionalDeps map[string]string `json:"optionalDependencies,omitempty"`
 }
 
 // Publish builds platform npm packages and a root coordinator package, then
@@ -76,7 +94,14 @@ func Publish(ctx context.Context, cfg *Config) error {
 
 	for _, pkg := range platforms {
 		fmt.Fprintf(stdout, "npm: %s %s...\n", verb, pkg.name)
-		if err := npmPublish(ctx, pkg.dir, cfg.Tag, cfg.Provenance, cfg.DryRun, stdout); err != nil {
+		if err := npmPublish(
+			ctx,
+			pkg.dir,
+			cfg.Tag,
+			cfg.Provenance,
+			cfg.DryRun,
+			stdout,
+		); err != nil {
 			return fmt.Errorf("npm: publishing %s: %w", pkg.name, err)
 		}
 	}
@@ -101,11 +126,6 @@ func Publish(ctx context.Context, cfg *Config) error {
 
 	fmt.Fprintf(stdout, "npm: done\n")
 	return nil
-}
-
-type builtPackage struct {
-	dir  string
-	name string
 }
 
 func buildPlatformPackages(cfg *Config) ([]builtPackage, func(), error) {
@@ -176,7 +196,8 @@ func buildRootPackage(cfg *Config, platforms []builtPackage) (builtPackage, func
 		cleanup()
 		return builtPackage{}, nil, fmt.Errorf("creating bin dir: %w", err)
 	}
-	wrapper := strings.NewReplacer("__BIN_NAME__", cfg.Name, "__ORG_NAME__", cfg.Org).Replace(wrapperJS)
+	wrapper := strings.NewReplacer("__BIN_NAME__", cfg.Name, "__ORG_NAME__", cfg.Org).
+		Replace(wrapperJS)
 	if err := os.WriteFile(filepath.Join(binDir, cfg.Name), []byte(wrapper), 0o755); err != nil {
 		cleanup()
 		return builtPackage{}, nil, fmt.Errorf("writing wrapper script: %w", err)
@@ -212,7 +233,12 @@ func buildRootPackage(cfg *Config, platforms []builtPackage) (builtPackage, func
 	return builtPackage{dir: dir, name: cfg.Name}, cleanup, nil
 }
 
-func npmPublish(ctx context.Context, dir, tag string, provenance, dryRun bool, stdout io.Writer) error {
+func npmPublish(
+	ctx context.Context,
+	dir, tag string,
+	provenance, dryRun bool,
+	stdout io.Writer,
+) error {
 	args := []string{"publish", "--access", "public", "--tag", tag}
 	if provenance {
 		args = append(args, "--provenance")
@@ -221,7 +247,8 @@ func npmPublish(ctx context.Context, dir, tag string, provenance, dryRun bool, s
 		fmt.Fprintf(stdout, "npm: [dry run] npm %s (in %s)\n", strings.Join(args, " "), dir)
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, "npm", args...) //nolint:gosec
+	//nolint:gosec // npm is a well-known binary; args are constructed internally, not from user input
+	cmd := exec.CommandContext(ctx, "npm", args...)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return errors.New(npmError(out))
@@ -276,12 +303,16 @@ func pollAllVisible(ctx context.Context, pkgs []builtPackage, version string) er
 }
 
 func pollUntilVisible(ctx context.Context, pkgName, version string) error {
-	registryURL := "https://registry.npmjs.org/" + url.PathEscape(pkgName) + "/" + url.PathEscape(version)
+	registryURL := "https://registry.npmjs.org/" + url.PathEscape(
+		pkgName,
+	) + "/" + url.PathEscape(
+		version,
+	)
 	deadline := time.Now().Add(registryPollTimeout)
 	for time.Now().Before(deadline) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, registryURL, nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("building registry poll request: %w", err)
 		}
 		if resp, err := httpClient.Do(req); err == nil {
 			_ = resp.Body.Close()
@@ -291,49 +322,42 @@ func pollUntilVisible(ctx context.Context, pkgName, version string) error {
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("registry poll cancelled: %w", ctx.Err())
 		case <-time.After(registryPollInterval):
 		}
 	}
 	return fmt.Errorf("package %s@%s not visible after %s", pkgName, version, registryPollTimeout)
 }
 
-type packageJSON struct {
-	Name         string            `json:"name"`
-	Version      string            `json:"version"`
-	Description  string            `json:"description,omitempty"`
-	License      string            `json:"license,omitempty"`
-	Repository   string            `json:"repository,omitempty"`
-	OS           []string          `json:"os,omitempty"`
-	CPU          []string          `json:"cpu,omitempty"`
-	Files        []string          `json:"files"`
-	Bin          map[string]string `json:"bin,omitempty"`
-	OptionalDeps map[string]string `json:"optionalDependencies,omitempty"`
-}
-
 func copyFile(src, dst string, mode os.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("opening source file: %w", err)
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
-		return err
+		return fmt.Errorf("opening destination file: %w", err)
 	}
 
 	if _, err = io.Copy(out, in); err != nil {
-		out.Close()
-		return err
+		_ = out.Close()
+		return fmt.Errorf("copying file data: %w", err)
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("closing destination file: %w", err)
+	}
+	return nil
 }
 
 func writeJSON(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshalling JSON: %w", err)
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("writing JSON file: %w", err)
+	}
+	return nil
 }

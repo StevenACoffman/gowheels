@@ -7,6 +7,50 @@ import (
 	"strings"
 )
 
+// All lists every platform gowheels supports. Linux targets produce two wheel
+// tags (manylinux glibc + musllinux) from a single static binary.
+var All = []Platform{
+	{
+		GOOS:       "linux",
+		GOARCH:     "amd64",
+		WheelTags:  []string{"manylinux_2_17_x86_64.manylinux2014_x86_64", "musllinux_1_2_x86_64"},
+		ArchiveExt: "tar.gz",
+	},
+	{
+		GOOS:   "linux",
+		GOARCH: "arm64",
+		WheelTags: []string{
+			"manylinux_2_17_aarch64.manylinux2014_aarch64",
+			"musllinux_1_2_aarch64",
+		},
+		ArchiveExt: "tar.gz",
+	},
+	{
+		GOOS:       "darwin",
+		GOARCH:     "amd64",
+		WheelTags:  []string{"macosx_10_9_x86_64"},
+		ArchiveExt: "tar.gz",
+	},
+	{
+		GOOS:       "darwin",
+		GOARCH:     "arm64",
+		WheelTags:  []string{"macosx_11_0_arm64"},
+		ArchiveExt: "tar.gz",
+	},
+	{
+		GOOS:       "windows",
+		GOARCH:     "amd64",
+		WheelTags:  []string{"win_amd64"},
+		ArchiveExt: "zip",
+	},
+	{
+		GOOS:       "windows",
+		GOARCH:     "arm64",
+		WheelTags:  []string{"win_arm64"},
+		ArchiveExt: "zip",
+	},
+}
+
 // Platform describes a single GOOS/GOARCH target and the Python wheel tags it
 // maps to. A single compiled binary covers all WheelTags for its os/arch pair
 // (valid when CGO_ENABLED=0 produces a fully static binary).
@@ -54,47 +98,6 @@ func (p Platform) GoReleaserArch() string {
 	default:
 		return p.GOARCH
 	}
-}
-
-// All lists every platform gowheels supports. Linux targets produce two wheel
-// tags (manylinux glibc + musllinux) from a single static binary.
-var All = []Platform{
-	{
-		GOOS:  "linux",
-		GOARCH: "amd64",
-		WheelTags:  []string{"manylinux_2_17_x86_64.manylinux2014_x86_64", "musllinux_1_2_x86_64"},
-		ArchiveExt: "tar.gz",
-	},
-	{
-		GOOS:  "linux",
-		GOARCH: "arm64",
-		WheelTags:  []string{"manylinux_2_17_aarch64.manylinux2014_aarch64", "musllinux_1_2_aarch64"},
-		ArchiveExt: "tar.gz",
-	},
-	{
-		GOOS:  "darwin",
-		GOARCH: "amd64",
-		WheelTags:  []string{"macosx_10_9_x86_64"},
-		ArchiveExt: "tar.gz",
-	},
-	{
-		GOOS:  "darwin",
-		GOARCH: "arm64",
-		WheelTags:  []string{"macosx_11_0_arm64"},
-		ArchiveExt: "tar.gz",
-	},
-	{
-		GOOS:  "windows",
-		GOARCH: "amd64",
-		WheelTags:  []string{"win_amd64"},
-		ArchiveExt: "zip",
-	},
-	{
-		GOOS:  "windows",
-		GOARCH: "arm64",
-		WheelTags:  []string{"win_arm64"},
-		ArchiveExt: "zip",
-	},
 }
 
 // Lookup returns the Platform for the given GOOS/GOARCH pair, or an error if

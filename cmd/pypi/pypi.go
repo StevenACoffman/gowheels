@@ -76,45 +76,146 @@ func New(parent *root.Config) *Config {
 
 	// Identity
 	cfg.Flags.StringVar(&cfg.Name, 0, "name", "", "binary name (required)")
-	cfg.Flags.StringVar(&cfg.PackageName, 0, "package-name", "", "Python package name on PyPI (default: --name)")
-	cfg.Flags.StringVar(&cfg.EntryPoint, 0, "entry-point", "", "console_scripts entry point (default: --name)")
+	cfg.Flags.StringVar(
+		&cfg.PackageName,
+		0,
+		"package-name",
+		"",
+		"Python package name on PyPI (default: --name)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.EntryPoint,
+		0,
+		"entry-point",
+		"",
+		"console_scripts entry point (default: --name)",
+	)
 
 	// Metadata
 	cfg.Flags.StringVar(&cfg.Summary, 0, "summary", "", "one-line package description")
-	cfg.Flags.StringVar(&cfg.LicenseExpr, 0, "license-expr", "MIT", "SPDX license expression (Metadata-Version 2.4)")
-	cfg.Flags.StringVar(&cfg.LicensePath, 0, "license", "", "path to local license file; bundled in dist-info/licenses/")
-	cfg.Flags.StringVar(&cfg.ReadmePath, 0, "readme", "", "path to README (default: auto-detect; use - to disable)")
+	cfg.Flags.StringVar(
+		&cfg.LicenseExpr,
+		0,
+		"license-expr",
+		"MIT",
+		"SPDX license expression (Metadata-Version 2.4)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.LicensePath,
+		0,
+		"license",
+		"",
+		"path to local license file; bundled in dist-info/licenses/",
+	)
+	cfg.Flags.StringVar(
+		&cfg.ReadmePath,
+		0,
+		"readme",
+		"",
+		"path to README (default: auto-detect; use - to disable)",
+	)
 	cfg.Flags.BoolVar(&cfg.NoReadme, 0, "no-readme", "disable README auto-detection")
 	cfg.Flags.StringVar(&cfg.URL, 0, "url", "", "project repository URL embedded as Project-URL")
 
 	// Version
-	cfg.Flags.StringVar(&cfg.Version, 0, "version", "", "version (semver or PEP 440; default: git describe --tags --exact-match)")
-	cfg.Flags.StringVar(&cfg.PyVersion, 0, "py-version", "", "override Python package version independently of binary version")
+	cfg.Flags.StringVar(
+		&cfg.Version,
+		0,
+		"version",
+		"",
+		"version (semver or PEP 440; default: git describe --tags --exact-match)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.PyVersion,
+		0,
+		"py-version",
+		"",
+		"override Python package version independently of binary version",
+	)
 
 	// Platform filter
-	cfg.Flags.StringVar(&cfg.PlatformFilter, 0, "platforms", "", "comma-separated os/arch filter (default: all supported platforms)")
+	cfg.Flags.StringVar(
+		&cfg.PlatformFilter,
+		0,
+		"platforms",
+		"",
+		"comma-separated os/arch filter (default: all supported platforms)",
+	)
 
 	// Output / upload
 	cfg.Flags.StringVar(&cfg.OutputDir, 0, "output", "dist", "output directory for .whl files")
 	cfg.Flags.BoolVar(&cfg.Upload, 0, "upload", "upload wheels to PyPI after building")
-	cfg.Flags.StringVar(&cfg.PyPIURL, 0, "pypi-url", "", "PyPI upload endpoint (default: https://upload.pypi.org/legacy/)")
-	cfg.Flags.StringVar(&cfg.PyPIToken, 0, "pypi-token", "", "PyPI API token; when absent, GitHub Actions OIDC is used")
+	cfg.Flags.StringVar(
+		&cfg.PyPIURL,
+		0,
+		"pypi-url",
+		"",
+		"PyPI upload endpoint (default: https://upload.pypi.org/legacy/)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.PyPIToken,
+		0,
+		"pypi-token",
+		"",
+		"PyPI API token; when absent, GitHub Actions OIDC is used",
+	)
 
 	// Mode
-	cfg.Flags.StringVar(&cfg.Mode, 0, "mode", "", "binary source: release, local, or build (inferred from other flags when omitted)")
+	cfg.Flags.StringVar(
+		&cfg.Mode,
+		0,
+		"mode",
+		"",
+		"binary source: release, local, or build (inferred from other flags when omitted)",
+	)
 
 	// Release mode flags
 	cfg.Flags.StringVar(&cfg.Repo, 0, "repo", "", "GitHub repo in owner/name format (release mode)")
-	cfg.Flags.StringVar(&cfg.Assets, 0, "assets", "", "comma-separated asset name overrides (release mode)")
-	cfg.Flags.StringVar(&cfg.Cache, 0, "cache", "", "binary cache directory (release mode; default: $XDG_CACHE_HOME/gowheels)")
-	cfg.Flags.StringVar(&cfg.GitHubToken, 0, "github-token", "", "GitHub personal access token (release mode; avoids API rate limits)")
+	cfg.Flags.StringVar(
+		&cfg.Assets,
+		0,
+		"assets",
+		"",
+		"comma-separated asset name overrides (release mode)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.Cache,
+		0,
+		"cache",
+		"",
+		"binary cache directory (release mode; default: $XDG_CACHE_HOME/gowheels)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.GitHubToken,
+		0,
+		"github-token",
+		"",
+		"GitHub personal access token (release mode; avoids API rate limits)",
+	)
 
 	// Local mode flags
-	cfg.Flags.StringListVar(&cfg.Artifacts, 0, "artifact", "artifact mapping os/arch:path, repeatable (local mode)")
+	cfg.Flags.StringListVar(
+		&cfg.Artifacts,
+		0,
+		"artifact",
+		"artifact mapping os/arch:path, repeatable (local mode)",
+	)
 
 	// Build mode flags
-	cfg.Flags.StringVar(&cfg.Package, 0, "package", "", "Go package path to build (build mode; default: .)")
-	cfg.Flags.StringVar(&cfg.ModDir, 0, "mod-dir", "", "directory containing go.mod (build mode; default: .)")
+	cfg.Flags.StringVar(
+		&cfg.Package,
+		0,
+		"package",
+		"",
+		"Go package path to build (build mode; default: .)",
+	)
+	cfg.Flags.StringVar(
+		&cfg.ModDir,
+		0,
+		"mod-dir",
+		"",
+		"directory containing go.mod (build mode; default: .)",
+	)
 	cfg.Flags.StringVar(&cfg.LDFlags, 0, "ldflags", "", "Go linker flags (build mode; default: -s)")
 
 	cfg.Command = &ff.Command{
@@ -164,9 +265,9 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	logger := slog.New(slog.NewTextHandler(cfg.Stderr, &slog.HandlerOptions{Level: level}))
 
 	// Resolve binary version.
-	ver, err := internver.Resolve(cfg.Version)
+	ver, err := internver.Resolve(ctx, cfg.Version)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolving version: %w", err)
 	}
 
 	// Python package version may differ (e.g. custom pre-release labelling).
@@ -189,17 +290,34 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	if err != nil {
 		return err
 	}
-	logger.Debug("resolved", "mode", mode, "version", ver, "py_version", pyVer, "platforms", len(plats))
+	logger.Debug(
+		"resolved",
+		"mode",
+		mode,
+		"version",
+		ver,
+		"py_version",
+		pyVer,
+		"platforms",
+		len(plats),
+	)
 
 	// Instantiate source.
 	var src source.Source
 	switch mode {
 	case "release":
-		src = source.NewReleaseSource(cfg.Repo, ver, cfg.Assets, cfg.Cache, cfg.GitHubToken, cfg.Stdout)
+		src = source.NewReleaseSource(
+			cfg.Repo,
+			ver,
+			cfg.Assets,
+			cfg.Cache,
+			cfg.GitHubToken,
+			cfg.Stdout,
+		)
 	case "local":
 		src, err = source.NewLocalSource(cfg.Artifacts)
 		if err != nil {
-			return err
+			return fmt.Errorf("creating local source: %w", err)
 		}
 	case "build":
 		src = source.NewBuildSource(cfg.Package, cfg.ModDir, cfg.LDFlags, cfg.Stdout, cfg.Stderr)
@@ -254,7 +372,7 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	fmt.Fprintf(cfg.Stdout, "gowheels: authenticating with PyPI...\n")
 	token, err := pypiclient.MintToken(ctx, cfg.PyPIToken)
 	if err != nil {
-		return err
+		return fmt.Errorf("authenticating with PyPI: %w", err)
 	}
 
 	fmt.Fprintf(cfg.Stdout, "gowheels: uploading %d wheel(s)...\n", len(wheels))
@@ -308,11 +426,17 @@ func (cfg *Config) inferMode() (string, error) {
 	case hasBuild && !hasRepo && !hasArtifacts:
 		return "build", nil
 	case hasRepo && hasArtifacts:
-		return "", errors.New("ambiguous mode: --repo (release) and --artifact (local) both set; use --mode to disambiguate")
+		return "", errors.New(
+			"ambiguous mode: --repo (release) and --artifact (local) both set; use --mode to disambiguate",
+		)
 	case hasRepo && hasBuild:
-		return "", errors.New("ambiguous mode: --repo (release) and --package/--mod-dir (build) both set; use --mode to disambiguate")
+		return "", errors.New(
+			"ambiguous mode: --repo (release) and --package/--mod-dir (build) both set; use --mode to disambiguate",
+		)
 	case hasArtifacts && hasBuild:
-		return "", errors.New("ambiguous mode: --artifact (local) and --package/--mod-dir (build) both set; use --mode to disambiguate")
+		return "", errors.New(
+			"ambiguous mode: --artifact (local) and --package/--mod-dir (build) both set; use --mode to disambiguate",
+		)
 	default:
 		return "", errors.New(
 			"cannot infer --mode; provide one of:\n" +
@@ -323,4 +447,3 @@ func (cfg *Config) inferMode() (string, error) {
 		)
 	}
 }
-

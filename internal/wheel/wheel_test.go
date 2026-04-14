@@ -148,16 +148,29 @@ func checkWheelContents(t *testing.T, w wheel.BuiltWheel) {
 		names = append(names, f.Name)
 	}
 
-	required := []string{"__init__.py", "__main__.py", "METADATA", "WHEEL", "entry_points.txt", "RECORD"}
+	required := []string{
+		"__init__.py",
+		"__main__.py",
+		"METADATA",
+		"WHEEL",
+		"entry_points.txt",
+		"RECORD",
+	}
 	for _, req := range required {
-		found := slices.ContainsFunc(names, func(n string) bool { return strings.HasSuffix(n, req) })
+		found := slices.ContainsFunc(
+			names,
+			func(n string) bool { return strings.HasSuffix(n, req) },
+		)
 		if !found {
 			t.Errorf("wheel is missing required entry ending in %q", req)
 		}
 	}
 
 	// Binary must be in bin/ subdirectory.
-	hasBin := slices.ContainsFunc(names, func(n string) bool { return strings.Contains(n, "/bin/") })
+	hasBin := slices.ContainsFunc(
+		names,
+		func(n string) bool { return strings.Contains(n, "/bin/") },
+	)
 	if !hasBin {
 		t.Errorf("wheel has no entry in bin/ subdirectory")
 	}
@@ -208,8 +221,8 @@ func checkWheelContents(t *testing.T, w wheel.BuiltWheel) {
 	checkRecordHashes(t, zr, record)
 
 	// __init__.py must not contain the __BIN_NAME__ sentinel.
-	init_ := readZipFile(zr, "__init__.py")
-	if strings.Contains(init_, "__BIN_NAME__") {
+	initPy := readZipFile(zr, "__init__.py")
+	if strings.Contains(initPy, "__BIN_NAME__") {
 		t.Errorf("__init__.py still contains unreplaced __BIN_NAME__ sentinel")
 	}
 }
@@ -242,8 +255,8 @@ func checkRecordHashes(t *testing.T, zr *zip.Reader, record string) {
 			t.Fatalf("opening %s: %v", f.Name, err)
 		}
 		var buf bytes.Buffer
-		buf.ReadFrom(rc)
-		rc.Close()
+		_, _ = buf.ReadFrom(rc)
+		_ = rc.Close()
 
 		h := sha256.Sum256(buf.Bytes())
 		want := "sha256=" + base64.RawURLEncoding.EncodeToString(h[:])
@@ -253,7 +266,12 @@ func checkRecordHashes(t *testing.T, zr *zip.Reader, record string) {
 			if strings.HasPrefix(line, f.Name+",") {
 				found = true
 				if !strings.Contains(line, want) {
-					t.Errorf("RECORD hash for %q mismatch\n  got  %s\n  want entry containing %s", f.Name, line, want)
+					t.Errorf(
+						"RECORD hash for %q mismatch\n  got  %s\n  want entry containing %s",
+						f.Name,
+						line,
+						want,
+					)
 				}
 				break
 			}
@@ -299,7 +317,11 @@ func TestValidateLicenseExpression(t *testing.T) {
 	for _, tt := range invalid {
 		t.Run("invalid/"+tt.desc, func(t *testing.T) {
 			if err := wheel.ValidateLicenseExpression(tt.expr); err == nil {
-				t.Errorf("ValidateLicenseExpression(%q) returned nil, want error (%s)", tt.expr, tt.desc)
+				t.Errorf(
+					"ValidateLicenseExpression(%q) returned nil, want error (%s)",
+					tt.expr,
+					tt.desc,
+				)
 			}
 		})
 	}
@@ -387,9 +409,9 @@ func readZipFile(zr *zip.Reader, suffix string) string {
 			if err != nil {
 				return ""
 			}
-			defer rc.Close()
+			defer func() { _ = rc.Close() }()
 			var buf bytes.Buffer
-			buf.ReadFrom(rc)
+			_, _ = buf.ReadFrom(rc)
 			return buf.String()
 		}
 	}

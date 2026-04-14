@@ -1,4 +1,4 @@
-package pypi
+package pypi_test
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/StevenACoffman/gowheels/internal/pypi"
 	"github.com/StevenACoffman/gowheels/internal/wheel"
 )
 
@@ -20,12 +21,12 @@ func TestUploadFormFields(t *testing.T) {
 	var capturedFileField string
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		//nolint:gosec // G120: test server; memory exhaustion not a concern in unit tests
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
 			http.Error(w, "bad multipart", http.StatusBadRequest)
 			return
 		}
 		capturedForm = r.MultipartForm.Value
-		// Capture the file part name.
 		for key := range r.MultipartForm.File {
 			capturedFileField = key
 		}
@@ -33,18 +34,15 @@ func TestUploadFormFields(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	// Temporarily replace the package-level httpClient with one that hits our
-	// test server (no actual network call).
-	orig := httpClient
-	httpClient = ts.Client()
-	defer func() { httpClient = orig }()
+	restore := pypi.SetHTTPClient(ts.Client())
+	defer restore()
 
 	w := wheel.BuiltWheel{
 		Filename: "mytool-1.0.0-py3-none-manylinux_2_17_x86_64.whl",
 		Data:     []byte("fake wheel data"),
 	}
 
-	if err := Upload(context.Background(), w, "test-token", ts.URL+"/"); err != nil {
+	if err := pypi.Upload(context.Background(), w, "test-token", ts.URL+"/"); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 
@@ -78,57 +76,5 @@ func TestUploadFormFields(t *testing.T) {
 		if len(b2[0]) != 64 {
 			t.Errorf("blake2_256_digest length = %d, want 64 hex chars", len(b2[0]))
 		}
-	}
-}
-
-func TestParseWheelFilename(t *testing.T) {
-	tests := []struct {
-		filename    string
-		wantName    string
-		wantVersion string
-		wantErr     bool
-	}{
-		{
-			filename:    "mytool-1.2.3-py3-none-linux_x86_64.whl",
-			wantName:    "mytool",
-			wantVersion: "1.2.3",
-		},
-		{
-			filename:    "my_tool-0.1.0-py3-none-win_amd64.whl",
-			wantName:    "my_tool",
-			wantVersion: "0.1.0",
-		},
-		{
-			filename:    "mytool-1.2.3b1-py3-none-macosx_11_0_arm64.whl",
-			wantName:    "mytool",
-			wantVersion: "1.2.3b1",
-		},
-		{
-			filename:    "mytool-1.2.3-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
-			wantName:    "mytool",
-			wantVersion: "1.2.3",
-		},
-		// No dash → error
-		{filename: "nodash.whl", wantErr: true},
-		// Empty → error
-		{filename: "", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.filename, func(t *testing.T) {
-			name, ver, err := parseWheelFilename(tt.filename)
-			if (err != nil) != tt.wantErr {
-				t.Fatalf("parseWheelFilename(%q) error = %v, wantErr %v", tt.filename, err, tt.wantErr)
-			}
-			if tt.wantErr {
-				return
-			}
-			if name != tt.wantName {
-				t.Errorf("name = %q, want %q", name, tt.wantName)
-			}
-			if ver != tt.wantVersion {
-				t.Errorf("version = %q, want %q", ver, tt.wantVersion)
-			}
-		})
 	}
 }

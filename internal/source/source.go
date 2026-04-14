@@ -8,6 +8,13 @@ import (
 	"github.com/StevenACoffman/gowheels/internal/platforms"
 )
 
+// Compile-time assertions that all source implementations satisfy Source.
+var (
+	_ Source = (*ReleaseSource)(nil)
+	_ Source = (*LocalSource)(nil)
+	_ Source = (*BuildSource)(nil)
+)
+
 // Binary is a resolved, ready-to-embed executable for one Platform.
 type Binary struct {
 	Platform platforms.Platform

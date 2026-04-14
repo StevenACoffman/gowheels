@@ -5,11 +5,11 @@ import (
 	"context"
 	"fmt"
 
-	mff "github.com/StevenACoffman/mango-ff"
 	"github.com/muesli/roff"
 	"github.com/peterbourgon/ff/v4"
 
 	"github.com/StevenACoffman/gowheels/cmd/root"
+	mff "github.com/StevenACoffman/mango-ff"
 )
 
 // Config holds the configuration for the man command.
@@ -39,6 +39,7 @@ func New(parent *root.Config) *Config {
 }
 
 func (cfg *Config) exec(_ context.Context, _ []string) error {
+	//nolint:gosec // int-to-uint conversion is safe: Section is a flag defaulting to 1, always non-negative
 	manPage, err := mff.NewManPage(uint(cfg.Section), cfg.Config.Command)
 	if err != nil {
 		return fmt.Errorf("man: %w", err)

@@ -39,9 +39,46 @@ func Upload(ctx context.Context, w wheel.BuiltWheel, token, pypiURL string) erro
 		return fmt.Errorf("computing blake2b-256 digest: %w", err)
 	}
 
-	pkgName, version, err := parseWheelFilename(w.Filename)
+	pkgName, _, err := parseWheelFilename(w.Filename)
 	if err != nil {
 		return err
+	}
+
+	body, contentType, err := buildUploadForm(w, sha2Sum[:], blake2Sum)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pypiURL, body)
+	if err != nil {
+		return fmt.Errorf("building upload request: %w", err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.SetBasicAuth("__token__", token)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("sending upload request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
+		return nil
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	msg := uploadError(resp.StatusCode, pkgName)
+	if detail := strings.TrimSpace(string(respBody)); detail != "" {
+		return fmt.Errorf("%s\nPyPI response: %s", msg, detail)
+	}
+	return errors.New(msg)
+}
+
+// buildUploadForm constructs the multipart body for a PyPI legacy upload.
+// It returns the body buffer, content-type header value, and any error.
+func buildUploadForm(w wheel.BuiltWheel, sha2, blake2 []byte) (*bytes.Buffer, string, error) {
+	pkgName, version, err := parseWheelFilename(w.Filename)
+	if err != nil {
+		return nil, "", err
 	}
 
 	var body bytes.Buffer
@@ -58,50 +95,34 @@ func Upload(ctx context.Context, w wheel.BuiltWheel, token, pypiURL string) erro
 		{"requires_python", ">=3.9"},
 		// sha2_digest is the canonical field name PyPI stores for SHA-256.
 		// blake2_256_digest is required for Metadata-Version 2.4 uploads.
-		{"sha2_digest", hex.EncodeToString(sha2Sum[:])},
-		{"blake2_256_digest", hex.EncodeToString(blake2Sum)},
+		{"sha2_digest", hex.EncodeToString(sha2)},
+		{"blake2_256_digest", hex.EncodeToString(blake2)},
 	}
 	for _, f := range fields {
 		if err := mw.WriteField(f[0], f[1]); err != nil {
-			return fmt.Errorf("building upload form: %w", err)
+			return nil, "", fmt.Errorf("building upload form: %w", err)
 		}
 	}
 
 	fw, err := mw.CreateFormFile("content", w.Filename)
 	if err != nil {
-		return err
+		return nil, "", fmt.Errorf("creating file form field: %w", err)
 	}
 	if _, err := io.Copy(fw, bytes.NewReader(w.Data)); err != nil {
-		return err
+		return nil, "", fmt.Errorf("writing wheel data: %w", err)
 	}
 	if err := mw.Close(); err != nil {
-		return err
+		return nil, "", fmt.Errorf("closing multipart writer: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pypiURL, &body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-	req.SetBasicAuth("__token__", token)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-		return nil
-	}
-	return errors.New(uploadError(resp.StatusCode))
+	return &body, mw.FormDataContentType(), nil
 }
 
 // blake2b256 returns the BLAKE2b-256 digest of data.
 func blake2b256(data []byte) ([]byte, error) {
 	h, err := blake2b.New256(nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating blake2b-256 hash: %w", err)
 	}
 	h.Write(data)
 	return h.Sum(nil), nil
@@ -118,16 +139,33 @@ func parseWheelFilename(filename string) (name, version string, err error) {
 	return parts[0], parts[1], nil
 }
 
-func uploadError(status int) string {
+func uploadError(status int, pkgName string) string {
 	switch status {
 	case http.StatusUnauthorized:
-		return "not authenticated: ensure your API token is valid"
+		return "not authenticated: check that GOWHEELS_PYPI_TOKEN is set to a valid PyPI API token\n" +
+			"  (tokens start with 'pypi-'; create one at https://pypi.org/manage/account/token/)"
 	case http.StatusForbidden:
-		return "permission denied: the package name may be taken or your token lacks write access"
+		return fmt.Sprintf(
+			"permission denied uploading %q to PyPI\n"+
+				"  1. name taken?  check https://pypi.org/project/%s/ — if owned by someone else, choose a different name\n"+
+				"  2. token scope? project-scoped tokens only work for their specific project;\n"+
+				"                  use an account-wide token or create one scoped to %q\n"+
+				"  3. first upload? the project must not already exist under a different owner",
+			pkgName, pkgName, pkgName,
+		)
 	case http.StatusConflict:
-		return "version already exists: this version has already been published"
+		return fmt.Sprintf(
+			"version already exists: %q has already been published at this version\n"+
+				"  bump the version or delete the release at https://pypi.org/manage/project/%s/releases/",
+			pkgName,
+			pkgName,
+		)
+	case http.StatusUnprocessableEntity:
+		return "invalid wheel: PyPI rejected the upload — the wheel filename, metadata, or a digest field failed validation\n" +
+			"  see 'PyPI response' above for the specific rejection reason"
 	case http.StatusBadRequest:
-		return "invalid package: check your metadata and version format"
+		return "invalid package: PyPI rejected the upload — check metadata fields and version format\n" +
+			"  run with --debug to see full request details"
 	default:
 		return fmt.Sprintf("unexpected status %d from PyPI", status)
 	}

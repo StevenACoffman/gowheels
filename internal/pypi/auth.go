@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-var httpClient = &http.Client{Timeout: 30 * time.Second}
+const pypiMintTokenURL = "https://upload.pypi.org/_/oidc/mint-token" //nolint:gosec // false positive: pypiMintTokenURL is a public API endpoint, not a credential
 
-const pypiMintTokenURL = "https://upload.pypi.org/_/oidc/mint-token"
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // MintToken returns a PyPI upload token using the following priority:
 //
@@ -65,18 +65,20 @@ func requestOIDCToken(ctx context.Context, requestURL, requestToken string) (str
 	q.Set("audience", "pypi")
 	u.RawQuery = q.Encode()
 
+	//nolint:gosec // OIDC endpoint URL is validated by the GitHub Actions token service; SSRF not a concern
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("building OIDC request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+requestToken)
 	req.Header.Set("Accept", "application/json")
 
+	//nolint:gosec // OIDC endpoint URL is validated by the GitHub Actions token service; SSRF not a concern
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("sending OIDC request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
@@ -87,7 +89,7 @@ func requestOIDCToken(ctx context.Context, requestURL, requestToken string) (str
 		Value string `json:"value"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return "", fmt.Errorf("decoding OIDC token response: %w", err)
 	}
 	if result.Value == "" {
 		return "", fmt.Errorf("OIDC token response was empty")
@@ -100,19 +102,24 @@ func exchangeForUploadToken(ctx context.Context, oidcToken string) (string, erro
 		Token string `json:"token"`
 	}{Token: oidcToken})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("marshalling token payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pypiMintTokenURL, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		pypiMintTokenURL,
+		bytes.NewReader(payload),
+	)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("building mint-token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("sending mint-token request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -127,7 +134,11 @@ func exchangeForUploadToken(ctx context.Context, oidcToken string) (string, erro
 					apiErr.Message,
 				)
 			}
-			return "", fmt.Errorf("PyPI mint-token returned %d: %s", resp.StatusCode, apiErr.Message)
+			return "", fmt.Errorf(
+				"PyPI mint-token returned %d: %s",
+				resp.StatusCode,
+				apiErr.Message,
+			)
 		}
 		return "", fmt.Errorf("PyPI mint-token returned %d: %s", resp.StatusCode, string(raw))
 	}
@@ -136,7 +147,7 @@ func exchangeForUploadToken(ctx context.Context, oidcToken string) (string, erro
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return "", fmt.Errorf("decoding mint-token response: %w", err)
 	}
 	if result.Token == "" {
 		return "", fmt.Errorf("PyPI returned empty upload token")

@@ -5,8 +5,8 @@ import (
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
-	"encoding/base64"
 	_ "embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -22,6 +22,18 @@ import (
 
 //go:embed shim.py
 var shimTemplate string
+
+var normalizeRe = regexp.MustCompile(`[-._]+`)
+
+// spdxPermitted matches the complete set of characters allowed in an SPDX
+// expression: letters, digits, hyphens, dots, +, spaces, and parentheses.
+
+var spdxPermitted = regexp.MustCompile(`^[a-zA-Z0-9\-\.+() ]+$`)
+
+// spdxLowerOp detects lowercase boolean operators (and/or/with) as whole words,
+// which are invalid in SPDX — they must be uppercase (AND, OR, WITH).
+
+var spdxLowerOp = regexp.MustCompile(`\b(and|or|with)\b`)
 
 // Config parameterises a wheel build.
 type Config struct {
@@ -49,15 +61,17 @@ type BuiltWheel struct {
 	Data     []byte
 }
 
-var normalizeRe = regexp.MustCompile(`[-._]+`)
-
-// spdxPermitted matches the complete set of characters allowed in an SPDX
-// expression: letters, digits, hyphens, dots, +, spaces, and parentheses.
-var spdxPermitted = regexp.MustCompile(`^[a-zA-Z0-9\-\.+() ]+$`)
-
-// spdxLowerOp detects lowercase boolean operators (and/or/with) as whole words,
-// which are invalid in SPDX — they must be uppercase (AND, OR, WITH).
-var spdxLowerOp = regexp.MustCompile(`\b(and|or|with)\b`)
+type wheelParams struct {
+	normName    string
+	rawName     string
+	entryPoint  string
+	version     string
+	tag         string
+	metadata    string
+	licenseData []byte
+	binary      source.Binary
+	outputDir   string
+}
 
 // ValidateLicenseExpression reports whether expr is a well-formed SPDX
 // expression for use in the Metadata-Version 2.4 License-Expression field.
@@ -97,18 +111,25 @@ func NormalizeName(name string) string {
 	return strings.ToLower(normalizeRe.ReplaceAllString(name, "_"))
 }
 
+// validateMetadata checks Metadata-Version 2.4 fields before any filesystem work.
+func validateMetadata(cfg Config) error {
+	if cfg.LicenseExpr != "" {
+		if err := ValidateLicenseExpression(cfg.LicenseExpr); err != nil {
+			return fmt.Errorf("--license-expr: %w", err)
+		}
+	}
+	if strings.ContainsAny(cfg.Summary, "\r\n") {
+		return errors.New("--summary: must be a single line (Metadata-Version 2.4 §2.1.5)")
+	}
+	return nil
+}
+
 // BuildAll builds one wheel per WheelTag across all binaries. A Linux binary
 // with two wheel tags (manylinux + musllinux) produces two wheels from the
 // same bytes without re-reading the source.
 func BuildAll(cfg Config, binaries []source.Binary) ([]BuiltWheel, error) {
-	// Validate Metadata-Version 2.4 fields before doing any filesystem work.
-	if cfg.LicenseExpr != "" {
-		if err := ValidateLicenseExpression(cfg.LicenseExpr); err != nil {
-			return nil, fmt.Errorf("--license-expr: %w", err)
-		}
-	}
-	if strings.ContainsAny(cfg.Summary, "\r\n") {
-		return nil, errors.New("--summary: must be a single line (Metadata-Version 2.4 §2.1.5)")
+	if err := validateMetadata(cfg); err != nil {
+		return nil, err
 	}
 
 	if cfg.OutputDir == "" {
@@ -166,18 +187,6 @@ func BuildAll(cfg Config, binaries []source.Binary) ([]BuiltWheel, error) {
 	return built, nil
 }
 
-type wheelParams struct {
-	normName    string
-	rawName     string
-	entryPoint  string
-	version     string
-	tag         string
-	metadata    string
-	licenseData []byte
-	binary      source.Binary
-	outputDir   string
-}
-
 func buildWheel(p wheelParams) (BuiltWheel, error) {
 	distInfo := fmt.Sprintf("%s-%s.dist-info", p.normName, p.version)
 
@@ -190,7 +199,9 @@ func buildWheel(p wheelParams) (BuiltWheel, error) {
 		p.normName + "/bin/" + p.binary.Filename: p.binary.Data,
 		distInfo + "/METADATA":                   []byte(p.metadata),
 		distInfo + "/WHEEL":                      []byte(buildWheelMeta(p.tag)),
-		distInfo + "/entry_points.txt":            []byte(fmt.Sprintf("[console_scripts]\n%s = %s:main\n", p.entryPoint, p.normName)),
+		distInfo + "/entry_points.txt": []byte(
+			fmt.Sprintf("[console_scripts]\n%s = %s:main\n", p.entryPoint, p.normName),
+		),
 	}
 	if p.licenseData != nil {
 		files[distInfo+"/licenses/LICENSE.txt"] = p.licenseData
@@ -208,7 +219,10 @@ func buildWheel(p wheelParams) (BuiltWheel, error) {
 //   - RECORD entries written in alphabetical order (slices.Sorted(maps.Keys))
 //     for deterministic archives.
 //   - RECORD entry itself appended last with empty hash/size (,,).
-func buildZip(files map[string][]byte, normName, version, tag, outputDir string) (BuiltWheel, error) {
+func buildZip(
+	files map[string][]byte,
+	normName, version, tag, outputDir string,
+) (BuiltWheel, error) {
 	distInfo := fmt.Sprintf("%s-%s.dist-info", normName, version)
 	recordPath := distInfo + "/RECORD"
 
@@ -277,7 +291,10 @@ func buildZip(files map[string][]byte, normName, version, tag, outputDir string)
 	return BuiltWheel{Filename: whlName, Data: buf.Bytes()}, nil
 }
 
-func buildMetadata(name, version, summary, url, licenseExpr, readme, readmeContentType string, hasLicense bool) string {
+func buildMetadata(
+	name, version, summary, url, licenseExpr, readme, readmeContentType string,
+	hasLicense bool,
+) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Metadata-Version: 2.4\n")
 	fmt.Fprintf(&b, "Name: %s\n", name)
@@ -303,7 +320,10 @@ func buildMetadata(name, version, summary, url, licenseExpr, readme, readmeConte
 }
 
 func buildWheelMeta(tag string) string {
-	return fmt.Sprintf("Wheel-Version: 1.0\nGenerator: gowheels\nRoot-Is-Purelib: false\nTag: py3-none-%s\n", tag)
+	return fmt.Sprintf(
+		"Wheel-Version: 1.0\nGenerator: gowheels\nRoot-Is-Purelib: false\nTag: py3-none-%s\n",
+		tag,
+	)
 }
 
 func sha256Digest(data []byte) string {
