@@ -248,7 +248,7 @@ linters:
           - revive  # deep-exit: main.go legitimately calls os.Exit
 
       # Internal packages and cmd/npm use intentional package-level vars (http clients, platform maps).
-      - path: (internal/(npm|pypi|source|version|platforms)|cmd/npm)/
+      - path: (internal/(npm|pypi|repometa|source|version|platforms)|cmd/npm)/
         linters:
           - gochecknoglobals
 

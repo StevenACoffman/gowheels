@@ -6,12 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"os"
+	"strings"
 
 	"github.com/peterbourgon/ff/v4"
 
 	"github.com/StevenACoffman/gowheels/cmd/root"
+	"github.com/StevenACoffman/gowheels/internal/gomod"
 	"github.com/StevenACoffman/gowheels/internal/platforms"
 	pypiclient "github.com/StevenACoffman/gowheels/internal/pypi"
+	"github.com/StevenACoffman/gowheels/internal/repometa"
 	"github.com/StevenACoffman/gowheels/internal/source"
 	internver "github.com/StevenACoffman/gowheels/internal/version"
 	"github.com/StevenACoffman/gowheels/internal/wheel"
@@ -97,8 +102,8 @@ func New(parent *root.Config) *Config {
 		&cfg.LicenseExpr,
 		0,
 		"license-expr",
-		"MIT",
-		"SPDX license expression (Metadata-Version 2.4)",
+		"",
+		"SPDX license expression (Metadata-Version 2.4); auto-detected from GitHub when --repo is set",
 	)
 	cfg.Flags.StringVar(
 		&cfg.LicensePath,
@@ -115,7 +120,13 @@ func New(parent *root.Config) *Config {
 		"path to README (default: auto-detect; use - to disable)",
 	)
 	cfg.Flags.BoolVar(&cfg.NoReadme, 0, "no-readme", "disable README auto-detection")
-	cfg.Flags.StringVar(&cfg.URL, 0, "url", "", "project repository URL embedded as Project-URL")
+	cfg.Flags.StringVar(
+		&cfg.URL,
+		0,
+		"url",
+		"",
+		"project URL (auto-detected from go.mod and GitHub when --repo is set)",
+	)
 
 	// Version
 	cfg.Flags.StringVar(
@@ -257,6 +268,27 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 		return errors.New("--name is required")
 	}
 
+	// Read GitHub token from environment when not supplied via flag.
+	// GOWHEELS_GITHUB_TOKEN takes precedence; GITHUB_TOKEN is the standard
+	// Actions token and is a useful fallback for avoiding rate limits.
+	if cfg.GitHubToken == "" {
+		for _, envVar := range []string{"GOWHEELS_GITHUB_TOKEN", "GITHUB_TOKEN"} {
+			if v := os.Getenv(envVar); v != "" {
+				cfg.GitHubToken = v
+				break
+			}
+		}
+	}
+
+	// Resolve the GitHub repository for metadata purposes (summary, license,
+	// topics, URLs). This is kept separate from cfg.Repo — which is only
+	// set by --repo — so that the env-var fallback does not trigger release
+	// mode when the user is running in local or build mode inside Actions.
+	githubRepo := cfg.Repo
+	if githubRepo == "" {
+		githubRepo = os.Getenv("GITHUB_REPOSITORY")
+	}
+
 	// Setup structured logging.
 	level := slog.LevelInfo
 	if cfg.Debug {
@@ -285,34 +317,42 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 		return fmt.Errorf("--platforms: %w", err)
 	}
 
-	// Determine binary source mode.
+	// Determine binary source mode using only cfg.Repo (user-specified).
 	mode, err := cfg.inferMode()
 	if err != nil {
 		return err
 	}
-	logger.Debug(
-		"resolved",
-		"mode",
-		mode,
-		"version",
-		ver,
-		"py_version",
-		pyVer,
-		"platforms",
-		len(plats),
-	)
+	logger.Debug("resolved", "mode", mode, "version", ver, "py_version", pyVer,
+		"platforms", len(plats))
+
+	// URL from go.mod: zero network calls, works in all modes.
+	if cfg.URL == "" {
+		modDir := cfg.ModDir
+		if modDir == "" {
+			modDir = "."
+		}
+		cfg.URL = gomod.RepoURL(modDir)
+	}
+
+	// Fetch GitHub repository metadata. Always fetched when a repo is known
+	// because topics (keywords) and Homepage are useful even when the other
+	// fields are explicitly set. Non-fatal on failure.
+	ghMeta := cfg.fetchGitHubMetaFor(ctx, logger, githubRepo)
+	cfg.applyGitHubMeta(ghMeta, logger)
+
+	// Build extra Project-URL entries and keywords from GitHub metadata.
+	extraURLs := cfg.buildExtraURLs(ghMeta)
+	var keywords []string
+	if ghMeta != nil {
+		keywords = ghMeta.Topics
+	}
 
 	// Instantiate source.
 	var src source.Source
 	switch mode {
 	case "release":
 		src = source.NewReleaseSource(
-			cfg.Repo,
-			ver,
-			cfg.Assets,
-			cfg.Cache,
-			cfg.GitHubToken,
-			cfg.Stdout,
+			cfg.Repo, ver, cfg.Assets, cfg.Cache, cfg.GitHubToken, cfg.Stdout,
 		)
 	case "local":
 		src, err = source.NewLocalSource(cfg.Artifacts)
@@ -353,6 +393,8 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 		LicensePath: cfg.LicensePath,
 		ReadmePath:  readmePath,
 		OutputDir:   cfg.OutputDir,
+		Keywords:    keywords,
+		ExtraURLs:   extraURLs,
 	}
 
 	fmt.Fprintf(cfg.Stdout, "gowheels: building wheels...\n")
@@ -385,6 +427,78 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 
 	fmt.Fprintf(cfg.Stdout, "gowheels: done\n")
 	return nil
+}
+
+// fetchGitHubMetaFor fetches repository metadata from the GitHub API.
+// It returns nil on failure — callers treat GitHub metadata as best-effort.
+func (cfg *Config) fetchGitHubMetaFor(
+	ctx context.Context,
+	logger *slog.Logger,
+	repo string,
+) *repometa.Repo {
+	if repo == "" {
+		return nil
+	}
+	logger.Debug("fetching GitHub repository metadata", "repo", repo)
+	meta, err := repometa.Fetch(ctx, repo, cfg.GitHubToken)
+	if err != nil {
+		logger.Debug("could not fetch GitHub metadata (non-fatal)", "error", err)
+		return nil
+	}
+	return meta
+}
+
+// applyGitHubMeta fills any still-empty metadata fields from the GitHub
+// repository response and logs each field that was auto-populated.
+func (cfg *Config) applyGitHubMeta(meta *repometa.Repo, logger *slog.Logger) {
+	if meta == nil {
+		return
+	}
+	if cfg.Summary == "" && meta.Description != "" {
+		cfg.Summary = meta.Description
+		logger.Info("auto-populated from GitHub", "field", "summary", "value", cfg.Summary)
+	}
+	if cfg.LicenseExpr == "" && meta.LicenseSPDX != "" {
+		cfg.LicenseExpr = meta.LicenseSPDX
+		logger.Info("auto-populated from GitHub", "field", "license-expr", "value", cfg.LicenseExpr)
+	}
+	if cfg.URL == "" && meta.HTMLURL != "" {
+		cfg.URL = meta.HTMLURL
+		logger.Info("auto-populated from GitHub", "field", "url", "value", cfg.URL)
+	}
+}
+
+// buildExtraURLs returns additional Project-URL entries derived from the
+// primary URL and, when available, the GitHub repository's homepage field.
+// /issues and /releases are only appended for known Git-hosting domains;
+// arbitrary documentation URLs would produce broken sidebar links.
+func (cfg *Config) buildExtraURLs(meta *repometa.Repo) [][2]string {
+	var urls [][2]string
+	if meta != nil && meta.Homepage != "" {
+		urls = append(urls, [2]string{"Homepage", meta.Homepage})
+	}
+	if cfg.URL != "" && isGitHostingURL(cfg.URL) {
+		urls = append(urls,
+			[2]string{"Bug Tracker", cfg.URL + "/issues"},
+			[2]string{"Changelog", cfg.URL + "/releases"},
+		)
+	}
+	return urls
+}
+
+// isGitHostingURL reports whether rawURL belongs to a known Git-hosting
+// domain (github.com, gitlab.com, codeberg.org) where /issues and
+// /releases are standard sidebar links.
+func isGitHostingURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "github.com", "gitlab.com", "codeberg.org":
+		return true
+	}
+	return false
 }
 
 // dryRun prints what would be built without doing any work.

@@ -69,3 +69,63 @@ func TestNormalize(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveEnvVersion(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		env    map[string]string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "GORELEASER_CURRENT_TAG valid semver",
+			env:    map[string]string{"GORELEASER_CURRENT_TAG": "v1.2.3"},
+			want:   "1.2.3",
+			wantOK: true,
+		},
+		{
+			name:   "GITHUB_REF_NAME valid semver",
+			env:    map[string]string{"GITHUB_REF_NAME": "v2.0.0"},
+			want:   "2.0.0",
+			wantOK: true,
+		},
+		{
+			name: "GORELEASER_CURRENT_TAG preferred over GITHUB_REF_NAME",
+			env: map[string]string{
+				"GORELEASER_CURRENT_TAG": "v1.0.0",
+				"GITHUB_REF_NAME":        "v2.0.0",
+			},
+			want:   "1.0.0",
+			wantOK: true,
+		},
+		{
+			name:   "GITHUB_REF_NAME is a branch name, not a version",
+			env:    map[string]string{"GITHUB_REF_NAME": "main"},
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "both empty",
+			env:    map[string]string{},
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "GORELEASER invalid falls through to GITHUB_REF_NAME valid",
+			env:    map[string]string{"GORELEASER_CURRENT_TAG": "not-a-version", "GITHUB_REF_NAME": "v3.0.0"},
+			want:   "3.0.0",
+			wantOK: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := func(key string) string { return tt.env[key] }
+			got, ok := version.ResolveEnvVersion(getenv)
+			if ok != tt.wantOK {
+				t.Errorf("ResolveEnvVersion ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Errorf("ResolveEnvVersion = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

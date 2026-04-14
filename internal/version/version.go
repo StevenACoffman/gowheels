@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -64,13 +65,44 @@ func Normalize(v string) (string, error) {
 	return v, nil
 }
 
+// resolveEnvVersion checks the given env vars (via getenv) in order and
+// returns the first value that normalizes to a valid PEP 440 version.
+// It returns ("", false) when no suitable value is found.
+func resolveEnvVersion(getenv func(string) string) (string, bool) {
+	for _, envVar := range []string{"GORELEASER_CURRENT_TAG", "GITHUB_REF_NAME"} {
+		val := getenv(envVar)
+		if val == "" {
+			continue
+		}
+		if v, err := Normalize(val); err == nil {
+			return v, true
+		}
+		// Not a valid version tag (e.g. GITHUB_REF_NAME is a branch name);
+		// continue to the next source.
+	}
+	return "", false
+}
+
 // Resolve returns a normalized PEP 440 version from an explicit string or,
-// when explicit is empty, from the current git tag via
-// `git describe --tags --exact-match`.
+// when explicit is empty, from CI environment variables or the current git tag
+// via `git describe --tags --exact-match`.
+//
+// Environment variables checked (in order):
+//   - GORELEASER_CURRENT_TAG
+//   - GITHUB_REF_NAME
+//
+// These are checked before running git because shallow clones (common in
+// GitHub Actions) may cause git describe to fail.
 func Resolve(ctx context.Context, explicit string) (string, error) {
 	if explicit != "" {
 		return Normalize(explicit)
 	}
+
+	// Check CI environment variables before running git.
+	if v, ok := resolveEnvVersion(os.Getenv); ok {
+		return v, nil
+	}
+
 	out, err := exec.CommandContext(ctx, "git", "describe", "--tags", "--exact-match").Output()
 	if err != nil {
 		return "", fmt.Errorf(

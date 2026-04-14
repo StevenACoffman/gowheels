@@ -402,6 +402,145 @@ func TestBuildAll_Metadata24Fields(t *testing.T) {
 	}
 }
 
+// TestDevelopmentStatus verifies the PEP 440 version → trove classifier mapping.
+func TestDevelopmentStatus(t *testing.T) {
+	for _, tt := range []struct {
+		version string
+		want    string
+	}{
+		{"1.2.3", "Development Status :: 5 - Production/Stable"},
+		{"0.1.0", "Development Status :: 5 - Production/Stable"},
+		{"1.2.3a1", "Development Status :: 3 - Alpha"},
+		{"1.2.3a0", "Development Status :: 3 - Alpha"},
+		{"1.2.3b1", "Development Status :: 4 - Beta"},
+		{"1.2.3b0", "Development Status :: 4 - Beta"},
+		{"1.2.3rc1", "Development Status :: 4 - Beta"},
+		{"1.2.3rc0", "Development Status :: 4 - Beta"},
+		{"1.2.3.dev0", "Development Status :: 2 - Pre-Alpha"},
+		{"1.2.3.dev1", "Development Status :: 2 - Pre-Alpha"},
+	} {
+		t.Run(tt.version, func(t *testing.T) {
+			got := wheel.DevelopmentStatus(tt.version)
+			if got != tt.want {
+				t.Errorf("DevelopmentStatus(%q) = %q, want %q", tt.version, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildAll_AutoClassifiers verifies that BuildAll emits the expected
+// automatic trove classifiers in the wheel METADATA.
+func TestBuildAll_AutoClassifiers(t *testing.T) {
+	outDir := t.TempDir()
+	plat, _ := platforms.Lookup("linux", "amd64")
+	binaries := []source.Binary{
+		{Platform: plat, Data: []byte("bin"), Filename: "tool"},
+	}
+
+	cfg := wheel.Config{
+		RawName:    "tool",
+		Version:    "1.2.3b1",
+		ReadmePath: "-",
+		OutputDir:  outDir,
+	}
+	wheels, err := wheel.BuildAll(cfg, binaries)
+	if err != nil {
+		t.Fatalf("BuildAll: %v", err)
+	}
+
+	zr, _ := zip.NewReader(bytes.NewReader(wheels[0].Data), int64(len(wheels[0].Data)))
+	metadata := readZipFile(zr, "METADATA")
+
+	for _, want := range []string{
+		"Classifier: Development Status :: 4 - Beta",
+		"Classifier: Environment :: Console",
+		"Classifier: Programming Language :: Python :: 3",
+		"Classifier: Operating System :: POSIX :: Linux",
+	} {
+		if !strings.Contains(metadata, want) {
+			t.Errorf("METADATA missing %q\nContent:\n%s", want, metadata)
+		}
+	}
+}
+
+// TestBuildAll_MultiPlatformClassifiers verifies that OS trove classifiers are
+// emitted for each distinct platform when building wheels for multiple targets.
+func TestBuildAll_MultiPlatformClassifiers(t *testing.T) {
+	outDir := t.TempDir()
+	linuxPlat, _ := platforms.Lookup("linux", "amd64")
+	darwinPlat, _ := platforms.Lookup("darwin", "arm64")
+	windowsPlat, _ := platforms.Lookup("windows", "amd64")
+	binaries := []source.Binary{
+		{Platform: linuxPlat, Data: []byte("bin"), Filename: "tool"},
+		{Platform: darwinPlat, Data: []byte("bin"), Filename: "tool"},
+		{Platform: windowsPlat, Data: []byte("bin"), Filename: "tool.exe"},
+	}
+
+	cfg := wheel.Config{
+		RawName:    "tool",
+		Version:    "1.0.0",
+		ReadmePath: "-",
+		OutputDir:  outDir,
+	}
+	wheels, err := wheel.BuildAll(cfg, binaries)
+	if err != nil {
+		t.Fatalf("BuildAll: %v", err)
+	}
+
+	// Read metadata from any wheel — classifiers are identical across wheels.
+	zr, _ := zip.NewReader(bytes.NewReader(wheels[0].Data), int64(len(wheels[0].Data)))
+	metadata := readZipFile(zr, "METADATA")
+
+	for _, want := range []string{
+		"Classifier: Operating System :: MacOS",
+		"Classifier: Operating System :: Microsoft :: Windows",
+		"Classifier: Operating System :: POSIX :: Linux",
+	} {
+		if !strings.Contains(metadata, want) {
+			t.Errorf("METADATA missing %q\nContent:\n%s", want, metadata)
+		}
+	}
+}
+
+// TestBuildAll_KeywordsAndExtraURLs verifies that Keywords and ExtraURLs are
+// emitted correctly in the wheel METADATA.
+func TestBuildAll_KeywordsAndExtraURLs(t *testing.T) {
+	outDir := t.TempDir()
+	plat, _ := platforms.Lookup("darwin", "arm64")
+	binaries := []source.Binary{
+		{Platform: plat, Data: []byte("bin"), Filename: "tool"},
+	}
+
+	cfg := wheel.Config{
+		RawName:    "tool",
+		Version:    "1.0.0",
+		ReadmePath: "-",
+		OutputDir:  outDir,
+		Keywords:   []string{"cli", "devtools", "go"},
+		ExtraURLs: [][2]string{
+			{"Bug Tracker", "https://github.com/owner/tool/issues"},
+			{"Changelog", "https://github.com/owner/tool/releases"},
+		},
+	}
+	wheels, err := wheel.BuildAll(cfg, binaries)
+	if err != nil {
+		t.Fatalf("BuildAll: %v", err)
+	}
+
+	zr, _ := zip.NewReader(bytes.NewReader(wheels[0].Data), int64(len(wheels[0].Data)))
+	metadata := readZipFile(zr, "METADATA")
+
+	for _, want := range []string{
+		"Keywords: cli devtools go",
+		"Project-URL: Bug Tracker, https://github.com/owner/tool/issues",
+		"Project-URL: Changelog, https://github.com/owner/tool/releases",
+	} {
+		if !strings.Contains(metadata, want) {
+			t.Errorf("METADATA missing %q\nContent:\n%s", want, metadata)
+		}
+	}
+}
+
 func readZipFile(zr *zip.Reader, suffix string) string {
 	for _, f := range zr.File {
 		if strings.HasSuffix(f.Name, suffix) {

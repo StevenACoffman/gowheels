@@ -35,6 +35,12 @@ var spdxPermitted = regexp.MustCompile(`^[a-zA-Z0-9\-\.+() ]+$`)
 
 var spdxLowerOp = regexp.MustCompile(`\b(and|or|with)\b`)
 
+// devStatusAlphaRe matches PEP 440 alpha versions like 1.2.3a1.
+var devStatusAlphaRe = regexp.MustCompile(`\d+a\d+$`)
+
+// devStatusBetaRe matches PEP 440 beta (b) and release candidate (rc) versions.
+var devStatusBetaRe = regexp.MustCompile(`\d+(b\d+|rc\d+)$`)
+
 // Config parameterises a wheel build.
 type Config struct {
 	// Package identity
@@ -50,6 +56,20 @@ type Config struct {
 	LicensePath string // local license file; empty → no license bundled
 	ReadmePath  string // explicit readme; empty → auto-detect; "-" → none
 
+	// Keywords are optional search terms included in the wheel METADATA as a
+	// space-separated Keywords field. GitHub topics are a good source.
+	Keywords []string
+
+	// Classifiers are additional PyPI trove classifiers. BuildAll always emits
+	// Development Status, Programming Language, and Environment classifiers
+	// automatically; entries here are appended after those.
+	Classifiers []string
+
+	// ExtraURLs are additional Project-URL entries beyond the primary URL.
+	// Each element is a [2]string{label, url} pair, e.g.
+	// {"Bug Tracker", "https://github.com/owner/repo/issues"}.
+	ExtraURLs [][2]string
+
 	// Output
 	OutputDir string // defaults to "dist"
 }
@@ -59,6 +79,20 @@ type Config struct {
 type BuiltWheel struct {
 	Filename string
 	Data     []byte
+}
+
+type metadataParams struct {
+	name              string
+	version           string
+	summary           string
+	url               string
+	licenseExpr       string
+	readme            string
+	readmeContentType string
+	hasLicense        bool
+	keywords          []string
+	classifiers       []string
+	extraURLs         [][2]string
 }
 
 type wheelParams struct {
@@ -71,6 +105,23 @@ type wheelParams struct {
 	licenseData []byte
 	binary      source.Binary
 	outputDir   string
+}
+
+// DevelopmentStatus returns the PyPI trove classifier string for the given
+// PEP 440 version. Pre-release suffixes (a, b, rc, .dev) map to the
+// corresponding development stages; all other versions map to
+// Production/Stable.
+func DevelopmentStatus(version string) string {
+	switch {
+	case strings.Contains(version, ".dev"):
+		return "Development Status :: 2 - Pre-Alpha"
+	case devStatusAlphaRe.MatchString(version):
+		return "Development Status :: 3 - Alpha"
+	case devStatusBetaRe.MatchString(version):
+		return "Development Status :: 4 - Beta"
+	default:
+		return "Development Status :: 5 - Production/Stable"
+	}
 }
 
 // ValidateLicenseExpression reports whether expr is a well-formed SPDX
@@ -111,19 +162,6 @@ func NormalizeName(name string) string {
 	return strings.ToLower(normalizeRe.ReplaceAllString(name, "_"))
 }
 
-// validateMetadata checks Metadata-Version 2.4 fields before any filesystem work.
-func validateMetadata(cfg Config) error {
-	if cfg.LicenseExpr != "" {
-		if err := ValidateLicenseExpression(cfg.LicenseExpr); err != nil {
-			return fmt.Errorf("--license-expr: %w", err)
-		}
-	}
-	if strings.ContainsAny(cfg.Summary, "\r\n") {
-		return errors.New("--summary: must be a single line (Metadata-Version 2.4 §2.1.5)")
-	}
-	return nil
-}
-
 // BuildAll builds one wheel per WheelTag across all binaries. A Linux binary
 // with two wheel tags (manylinux + musllinux) produces two wheels from the
 // same bytes without re-reading the source.
@@ -148,6 +186,15 @@ func BuildAll(cfg Config, binaries []source.Binary) ([]BuiltWheel, error) {
 		entryPoint = cfg.EntryPoint
 	}
 
+	// Build automatic trove classifiers from version and platforms.
+	autoClassifiers := []string{
+		DevelopmentStatus(cfg.Version),
+		"Environment :: Console",
+		"Programming Language :: Python :: 3",
+	}
+	autoClassifiers = append(autoClassifiers, osClassifiers(binaries)...)
+	allClassifiers := append(autoClassifiers, cfg.Classifiers...)
+
 	// Read optional files once, shared across all wheels.
 	readmeContent, readmeContentType := resolveReadme(cfg.ReadmePath)
 
@@ -160,8 +207,19 @@ func BuildAll(cfg Config, binaries []source.Binary) ([]BuiltWheel, error) {
 		licenseData = data
 	}
 
-	metadata := buildMetadata(normName, cfg.Version, cfg.Summary, cfg.URL,
-		cfg.LicenseExpr, readmeContent, readmeContentType, licenseData != nil)
+	metadata := buildMetadata(metadataParams{
+		name:              normName,
+		version:           cfg.Version,
+		summary:           cfg.Summary,
+		url:               cfg.URL,
+		licenseExpr:       cfg.LicenseExpr,
+		readme:            readmeContent,
+		readmeContentType: readmeContentType,
+		hasLicense:        licenseData != nil,
+		keywords:          cfg.Keywords,
+		classifiers:       allClassifiers,
+		extraURLs:         cfg.ExtraURLs,
+	})
 
 	var built []BuiltWheel
 	for _, bin := range binaries {
@@ -185,6 +243,19 @@ func BuildAll(cfg Config, binaries []source.Binary) ([]BuiltWheel, error) {
 		}
 	}
 	return built, nil
+}
+
+// validateMetadata checks Metadata-Version 2.4 fields before any filesystem work.
+func validateMetadata(cfg Config) error {
+	if cfg.LicenseExpr != "" {
+		if err := ValidateLicenseExpression(cfg.LicenseExpr); err != nil {
+			return fmt.Errorf("--license-expr: %w", err)
+		}
+	}
+	if strings.ContainsAny(cfg.Summary, "\r\n") {
+		return errors.New("--summary: must be a single line (Metadata-Version 2.4 §2.1.5)")
+	}
+	return nil
 }
 
 func buildWheel(p wheelParams) (BuiltWheel, error) {
@@ -291,30 +362,36 @@ func buildZip(
 	return BuiltWheel{Filename: whlName, Data: buf.Bytes()}, nil
 }
 
-func buildMetadata(
-	name, version, summary, url, licenseExpr, readme, readmeContentType string,
-	hasLicense bool,
-) string {
+func buildMetadata(p metadataParams) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Metadata-Version: 2.4\n")
-	fmt.Fprintf(&b, "Name: %s\n", name)
-	fmt.Fprintf(&b, "Version: %s\n", version)
-	if summary != "" {
-		fmt.Fprintf(&b, "Summary: %s\n", summary)
+	fmt.Fprintf(&b, "Name: %s\n", p.name)
+	fmt.Fprintf(&b, "Version: %s\n", p.version)
+	if p.summary != "" {
+		fmt.Fprintf(&b, "Summary: %s\n", p.summary)
 	}
-	if url != "" {
-		fmt.Fprintf(&b, "Project-URL: Repository, %s\n", url)
+	if len(p.keywords) > 0 {
+		fmt.Fprintf(&b, "Keywords: %s\n", strings.Join(p.keywords, " "))
 	}
-	if licenseExpr != "" {
-		fmt.Fprintf(&b, "License-Expression: %s\n", licenseExpr)
+	for _, c := range p.classifiers {
+		fmt.Fprintf(&b, "Classifier: %s\n", c)
 	}
-	if hasLicense {
+	if p.url != "" {
+		fmt.Fprintf(&b, "Project-URL: Repository, %s\n", p.url)
+	}
+	for _, eu := range p.extraURLs {
+		fmt.Fprintf(&b, "Project-URL: %s, %s\n", eu[0], eu[1])
+	}
+	if p.licenseExpr != "" {
+		fmt.Fprintf(&b, "License-Expression: %s\n", p.licenseExpr)
+	}
+	if p.hasLicense {
 		fmt.Fprintf(&b, "License-File: licenses/LICENSE.txt\n")
 	}
 	fmt.Fprintf(&b, "Requires-Python: >=3.9\n")
-	if readme != "" {
-		fmt.Fprintf(&b, "Description-Content-Type: %s\n", readmeContentType)
-		fmt.Fprintf(&b, "\n%s", readme)
+	if p.readme != "" {
+		fmt.Fprintf(&b, "Description-Content-Type: %s\n", p.readmeContentType)
+		fmt.Fprintf(&b, "\n%s", p.readme)
 	}
 	return b.String()
 }
@@ -362,4 +439,28 @@ func detectContentType(path string) string {
 	default:
 		return "text/plain"
 	}
+}
+
+func osClassifiers(binaries []source.Binary) []string {
+	seen := make(map[string]bool)
+	var result []string
+	for _, b := range binaries {
+		var c string
+		switch b.Platform.GOOS {
+		case "linux":
+			c = "Operating System :: POSIX :: Linux"
+		case "darwin":
+			c = "Operating System :: MacOS"
+		case "windows":
+			c = "Operating System :: Microsoft :: Windows"
+		default:
+			continue
+		}
+		if !seen[c] {
+			seen[c] = true
+			result = append(result, c)
+		}
+	}
+	slices.Sort(result)
+	return result
 }
