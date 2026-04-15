@@ -48,7 +48,7 @@ func Fetch(ctx context.Context, repo, token string) (*Repo, error) {
 }
 
 func fetchURL(ctx context.Context, url, token string) (*Repo, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("building repo metadata request: %w", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/StevenACoffman/gowheels/cmd/man"
 	"github.com/StevenACoffman/gowheels/cmd/npm"
 	"github.com/StevenACoffman/gowheels/cmd/pypi"
+	"github.com/StevenACoffman/gowheels/cmd/pypidiff"
 	"github.com/StevenACoffman/gowheels/cmd/root"
 	"github.com/StevenACoffman/gowheels/cmd/version"
 )
@@ -38,6 +39,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	pypi.New(r)
 	npm.New(r)
 	man.New(r)
+	pypidiff.New(r)
 	// register new commands here
 
 	if err := r.Command.Parse(args, ff.WithEnvVarPrefix("GOWHEELS")); err != nil {

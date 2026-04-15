@@ -215,7 +215,7 @@ func (s *ReleaseSource) fetchRelease(ctx context.Context) (*ghRelease, error) {
 }
 
 func (s *ReleaseSource) ghGet(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("building GitHub API request: %w", err)
 	}
@@ -251,7 +251,7 @@ func (s *ReleaseSource) download(ctx context.Context, url string) ([]byte, error
 		}
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, fmt.Errorf("building download request: %w", err)
 	}

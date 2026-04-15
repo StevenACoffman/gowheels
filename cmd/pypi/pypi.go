@@ -322,7 +322,7 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	if err != nil {
 		return err
 	}
-	logger.Debug("resolved", "mode", mode, "version", ver, "py_version", pyVer,
+	logger.DebugContext(ctx, "resolved", "mode", mode, "version", ver, "py_version", pyVer,
 		"platforms", len(plats))
 
 	// URL from go.mod: zero network calls, works in all modes.
@@ -337,8 +337,22 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	// Fetch GitHub repository metadata. Always fetched when a repo is known
 	// because topics (keywords) and Homepage are useful even when the other
 	// fields are explicitly set. Non-fatal on failure.
+	if githubRepo == "" {
+		logger.WarnContext(
+			ctx,
+			"no GitHub repository configured; summary, license, keywords, and extra URLs will not be auto-populated (use --repo or set GITHUB_REPOSITORY)",
+		)
+	}
 	ghMeta := cfg.fetchGitHubMetaFor(ctx, logger, githubRepo)
-	cfg.applyGitHubMeta(ghMeta, logger)
+	cfg.applyGitHubMeta(ctx, ghMeta, logger)
+
+	// Warn if summary is still empty after all resolution attempts.
+	if cfg.Summary == "" {
+		logger.WarnContext(
+			ctx,
+			"summary will be empty in the wheel (use --summary or configure --repo with a GitHub description)",
+		)
+	}
 
 	// Build extra Project-URL entries and keywords from GitHub metadata.
 	extraURLs := cfg.buildExtraURLs(ghMeta)
@@ -373,13 +387,61 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("resolving binaries: %w", err)
 	}
-	logger.Debug("resolved binaries", "count", len(binaries))
+	logger.DebugContext(ctx, "resolved binaries", "count", len(binaries))
 
-	// Compute readme path (--no-readme → pass "-" to disable auto-detect).
+	// Compute readme path (--no-readme → pass "-" to disable auto-detect) and
+	// determine the human-readable status for logging. Both the per-field
+	// warning and the pre-build metadata summary use the same status string.
 	readmePath := cfg.ReadmePath
-	if cfg.NoReadme {
+	readmeStatus := "not included"
+	switch {
+	case cfg.NoReadme:
 		readmePath = "-"
+		readmeStatus = "disabled (--no-readme)"
+		logger.DebugContext(
+			ctx,
+			"README disabled by --no-readme; wheel will have no long description",
+		)
+	case cfg.ReadmePath != "":
+		if _, statErr := os.Stat(cfg.ReadmePath); statErr != nil {
+			logger.WarnContext(ctx, "README file not found; wheel will have no long description",
+				"path", cfg.ReadmePath)
+		} else {
+			readmeStatus = cfg.ReadmePath
+			logger.DebugContext(ctx, "README resolved", "path", cfg.ReadmePath)
+		}
+	default:
+		// Auto-detect: check once, log result, reuse for the metadata summary.
+		for _, name := range []string{"README.md", "README.rst", "README.txt", "README"} {
+			if _, statErr := os.Stat(name); statErr == nil {
+				readmeStatus = name
+				break
+			}
+		}
+		if readmeStatus == "not included" {
+			logger.WarnContext(
+				ctx,
+				"no README file found in current directory; wheel will have no long description",
+				"tried",
+				[]string{"README.md", "README.rst", "README.txt", "README"},
+			)
+		} else {
+			logger.DebugContext(ctx, "README auto-detected", "path", readmeStatus)
+		}
 	}
+
+	// Log the metadata that will be written into every wheel. This is the last
+	// chance to catch empty fields before upload — PyPI does not allow metadata
+	// updates after a version is published (re-uploading the same version with
+	// corrected metadata will fail with HTTP 409; the version must be deleted
+	// and re-uploaded, or a new version released).
+	logger.InfoContext(ctx, "wheel metadata",
+		"summary", cfg.Summary,
+		"license_expr", cfg.LicenseExpr,
+		"readme", readmeStatus,
+		"keywords", len(keywords),
+		"project_url", cfg.URL,
+	)
 
 	// Build wheels.
 	whlCfg := wheel.Config{
@@ -401,6 +463,13 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	wheels, err := wheel.BuildAll(whlCfg, binaries)
 	if err != nil {
 		return fmt.Errorf("building wheels: %w", err)
+	}
+	if len(wheels) == 0 {
+		logger.WarnContext(
+			ctx,
+			"no wheels were built; the binary source returned no matching binaries for the target platforms",
+		)
+		return nil
 	}
 	for _, w := range wheels {
 		fmt.Fprintf(cfg.Stdout, "  built %s\n", w.Filename)
@@ -439,10 +508,15 @@ func (cfg *Config) fetchGitHubMetaFor(
 	if repo == "" {
 		return nil
 	}
-	logger.Debug("fetching GitHub repository metadata", "repo", repo)
+	logger.DebugContext(ctx, "fetching GitHub repository metadata", "repo", repo)
 	meta, err := repometa.Fetch(ctx, repo, cfg.GitHubToken)
 	if err != nil {
-		logger.Debug("could not fetch GitHub metadata (non-fatal)", "error", err)
+		logger.WarnContext(
+			ctx,
+			"could not fetch GitHub metadata; summary, license, keywords, and extra URLs will not be auto-populated",
+			"error",
+			err,
+		)
 		return nil
 	}
 	return meta
@@ -450,21 +524,40 @@ func (cfg *Config) fetchGitHubMetaFor(
 
 // applyGitHubMeta fills any still-empty metadata fields from the GitHub
 // repository response and logs each field that was auto-populated.
-func (cfg *Config) applyGitHubMeta(meta *repometa.Repo, logger *slog.Logger) {
+func (cfg *Config) applyGitHubMeta(ctx context.Context, meta *repometa.Repo, logger *slog.Logger) {
 	if meta == nil {
 		return
 	}
 	if cfg.Summary == "" && meta.Description != "" {
 		cfg.Summary = meta.Description
-		logger.Info("auto-populated from GitHub", "field", "summary", "value", cfg.Summary)
+		logger.InfoContext(
+			ctx,
+			"auto-populated from GitHub",
+			"field",
+			"summary",
+			"value",
+			cfg.Summary,
+		)
+	} else if cfg.Summary == "" && meta.Description == "" {
+		logger.WarnContext(
+			ctx,
+			"GitHub repository has no description; summary will be empty (set it on GitHub or use --summary)",
+		)
 	}
 	if cfg.LicenseExpr == "" && meta.LicenseSPDX != "" {
 		cfg.LicenseExpr = meta.LicenseSPDX
-		logger.Info("auto-populated from GitHub", "field", "license-expr", "value", cfg.LicenseExpr)
+		logger.InfoContext(
+			ctx, "auto-populated from GitHub", "field", "license-expr", "value", cfg.LicenseExpr,
+		)
+	} else if cfg.LicenseExpr == "" && meta.LicenseSPDX == "" {
+		logger.WarnContext(
+			ctx,
+			"GitHub repository has no detectable SPDX license; license-expr will be empty (add a LICENSE file on GitHub or use --license-expr)",
+		)
 	}
 	if cfg.URL == "" && meta.HTMLURL != "" {
 		cfg.URL = meta.HTMLURL
-		logger.Info("auto-populated from GitHub", "field", "url", "value", cfg.URL)
+		logger.InfoContext(ctx, "auto-populated from GitHub", "field", "url", "value", cfg.URL)
 	}
 }
 

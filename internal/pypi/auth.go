@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,11 +36,10 @@ func MintToken(ctx context.Context, pypiToken string) (string, error) {
 	requestToken := os.Getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN")
 
 	if requestURL == "" || requestToken == "" {
-		return "", fmt.Errorf(
-			"gowheels: no PyPI credentials found\n" +
-				"  option 1: set GOWHEELS_PYPI_TOKEN to a PyPI API token\n" +
-				"  option 2: add 'id-token: write' to your workflow permissions and\n" +
-				"            configure a trusted publisher at https://pypi.org/manage/account/publishing/",
+		return "", errors.New("gowheels: no PyPI credentials found\n" +
+			"  option 1: set GOWHEELS_PYPI_TOKEN to a PyPI API token\n" +
+			"  option 2: add 'id-token: write' to your workflow permissions and\n" +
+			"            configure a trusted publisher at https://pypi.org/manage/account/publishing/",
 		)
 	}
 
@@ -66,7 +66,7 @@ func requestOIDCToken(ctx context.Context, requestURL, requestToken string) (str
 	u.RawQuery = q.Encode()
 
 	//nolint:gosec // OIDC endpoint URL is validated by the GitHub Actions token service; SSRF not a concern
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
 	if err != nil {
 		return "", fmt.Errorf("building OIDC request: %w", err)
 	}
@@ -92,7 +92,7 @@ func requestOIDCToken(ctx context.Context, requestURL, requestToken string) (str
 		return "", fmt.Errorf("decoding OIDC token response: %w", err)
 	}
 	if result.Value == "" {
-		return "", fmt.Errorf("OIDC token response was empty")
+		return "", errors.New("OIDC token response was empty")
 	}
 	return result.Value, nil
 }
@@ -150,7 +150,7 @@ func exchangeForUploadToken(ctx context.Context, oidcToken string) (string, erro
 		return "", fmt.Errorf("decoding mint-token response: %w", err)
 	}
 	if result.Token == "" {
-		return "", fmt.Errorf("PyPI returned empty upload token")
+		return "", errors.New("PyPI returned empty upload token")
 	}
 	return result.Token, nil
 }

@@ -39,7 +39,7 @@ type Artifact struct {
 	PackageSuffix string // e.g. "linux-x64"
 }
 
-// Config parameterises an npm publish run.
+// Config parameterizes an npm publish run.
 type Config struct {
 	Name       string
 	Version    string
@@ -310,7 +310,7 @@ func pollUntilVisible(ctx context.Context, pkgName, version string) error {
 	)
 	deadline := time.Now().Add(registryPollTimeout)
 	for time.Now().Before(deadline) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, registryURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, registryURL, http.NoBody)
 		if err != nil {
 			return fmt.Errorf("building registry poll request: %w", err)
 		}

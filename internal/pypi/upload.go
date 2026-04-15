@@ -156,7 +156,10 @@ func uploadError(status int, pkgName string) string {
 	case http.StatusConflict:
 		return fmt.Sprintf(
 			"version already exists: %q has already been published at this version\n"+
-				"  bump the version or delete the release at https://pypi.org/manage/project/%s/releases/",
+				"  PyPI does not allow re-uploading the same version, even to fix missing metadata\n"+
+				"  (summary, description/README, keywords cannot be updated in place)\n"+
+				"  options: delete the release and re-upload, or bump the version\n"+
+				"  manage releases at https://pypi.org/manage/project/%s/releases/",
 			pkgName,
 			pkgName,
 		)
