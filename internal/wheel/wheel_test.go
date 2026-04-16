@@ -420,7 +420,11 @@ func TestPlatformIndependentClassifiers(t *testing.T) {
 			t.Parallel()
 			got := wheel.PlatformIndependentClassifiers(tt.version)
 			if len(got) != 3 {
-				t.Fatalf("PlatformIndependentClassifiers(%q) = %v (want 3 entries)", tt.version, got)
+				t.Fatalf(
+					"PlatformIndependentClassifiers(%q) = %v (want 3 entries)",
+					tt.version,
+					got,
+				)
 			}
 			if got[0] != tt.wantDev {
 				t.Errorf("[0] = %q, want %q", got[0], tt.wantDev)

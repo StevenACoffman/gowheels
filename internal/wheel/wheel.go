@@ -241,7 +241,9 @@ func BuildAll(cfg Config, binaries []source.Binary) ([]BuiltWheel, error) {
 	}
 
 	// Build automatic trove classifiers from version and platforms.
-	autoClassifiers := append(PlatformIndependentClassifiers(cfg.Version), osClassifiers(binaries)...)
+	autoClassifiers := append(
+		PlatformIndependentClassifiers(cfg.Version),
+		osClassifiers(binaries)...)
 	allClassifiers := append(autoClassifiers, cfg.Classifiers...)
 
 	// Read optional files once, shared across all wheels.

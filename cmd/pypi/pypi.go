@@ -463,7 +463,7 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	// failure or a brand-new package that is not yet on PyPI simply skips the
 	// diff and proceeds.
 	if cfg.Upload {
-		cfg.runPreUploadDiff(ctx, logger, pyVer, whlCfg)
+		cfg.runPreUploadDiff(ctx, logger, pyVer, &whlCfg)
 	}
 
 	fmt.Fprintf(cfg.Stdout, "gowheels: building wheels...\n")
@@ -613,7 +613,7 @@ func (cfg *Config) runPreUploadDiff(
 	ctx context.Context,
 	logger *slog.Logger,
 	pyVer string,
-	whlCfg wheel.Config,
+	whlCfg *wheel.Config,
 ) {
 	normName := wheel.NormalizeName(whlCfg.RawName)
 	if whlCfg.PackageName != "" {
@@ -628,7 +628,11 @@ func (cfg *Config) runPreUploadDiff(
 		return
 	}
 
-	localText := wheel.BuildMetadataText(whlCfg, pyVer, wheel.PlatformIndependentClassifiers(pyVer))
+	localText := wheel.BuildMetadataText(
+		*whlCfg,
+		pyVer,
+		wheel.PlatformIndependentClassifiers(pyVer),
+	)
 	logger.DebugContext(ctx, "local METADATA to be embedded in wheels", "text", localText)
 
 	// Normalize the remote version to pyVer before diffing. The version field

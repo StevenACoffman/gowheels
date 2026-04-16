@@ -59,7 +59,7 @@ func TestRenderAsMetadata(t *testing.T) {
 		bugIdx := strings.Index(got, "Bug Tracker")
 		changeIdx := strings.Index(got, "Changelog")
 		repoIdx := strings.Index(got, "Repository")
-		if !(bugIdx < changeIdx && changeIdx < repoIdx) {
+		if bugIdx >= changeIdx || changeIdx >= repoIdx {
 			t.Errorf("Project-URLs not in alphabetical order:\n%s", got)
 		}
 	})

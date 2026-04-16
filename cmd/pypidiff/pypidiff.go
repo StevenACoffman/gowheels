@@ -226,7 +226,17 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	}
 	classifiers := buildClassifiers(remote.Version)
 	localText := wheel.BuildMetadataText(whlCfg, remote.Version, classifiers)
+	return cfg.printDiffReport(localText, remote, normName)
+}
 
+// printDiffReport prints the local METADATA text followed by a unified diff
+// against the PyPI-registered metadata for the same package. It returns
+// root.ExitError(1) when differences are found, nil otherwise.
+func (cfg *Config) printDiffReport(
+	localText string,
+	remote *pypiclient.PackageInfo,
+	normName string,
+) error {
 	// Print the full local METADATA — this is what gowheels pypi would have
 	// embedded in the wheel.
 	fmt.Fprintf(cfg.Stdout, "=== local METADATA (gowheels pypi would generate) ===\n")
@@ -342,11 +352,25 @@ func (cfg *Config) applyGitHubMeta(ctx context.Context, meta *repometa.Repo, log
 	}
 	if cfg.Summary == "" && meta.Description != "" {
 		cfg.Summary = meta.Description
-		logger.InfoContext(ctx, "auto-populated from GitHub", "field", "summary", "value", cfg.Summary)
+		logger.InfoContext(
+			ctx,
+			"auto-populated from GitHub",
+			"field",
+			"summary",
+			"value",
+			cfg.Summary,
+		)
 	}
 	if cfg.LicenseExpr == "" && meta.LicenseSPDX != "" {
 		cfg.LicenseExpr = meta.LicenseSPDX
-		logger.InfoContext(ctx, "auto-populated from GitHub", "field", "license-expr", "value", cfg.LicenseExpr)
+		logger.InfoContext(
+			ctx,
+			"auto-populated from GitHub",
+			"field",
+			"license-expr",
+			"value",
+			cfg.LicenseExpr,
+		)
 	}
 	if cfg.URL == "" && meta.HTMLURL != "" {
 		cfg.URL = meta.HTMLURL
@@ -370,8 +394,10 @@ func buildExtraURLPairs(repoURL string, meta *repometa.Repo) [][2]string {
 		pairs = append(pairs, [2]string{"Homepage", meta.Homepage})
 	}
 	if repoURL != "" && pypiclient.IsGitHostingURL(repoURL) {
-		pairs = append(pairs, [2]string{"Bug Tracker", repoURL + "/issues"})
-		pairs = append(pairs, [2]string{"Changelog", repoURL + "/releases"})
+		pairs = append(pairs,
+			[2]string{"Bug Tracker", repoURL + "/issues"},
+			[2]string{"Changelog", repoURL + "/releases"},
+		)
 	}
 	return pairs
 }
