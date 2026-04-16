@@ -78,6 +78,7 @@ type Config struct {
 // are held in memory for the optional upload step.
 type BuiltWheel struct {
 	Filename string
+	Metadata string // RFC 822 METADATA content embedded in the dist-info directory
 	Data     []byte
 }
 
@@ -329,7 +330,12 @@ func buildWheel(p wheelParams) (BuiltWheel, error) {
 		files[distInfo+"/licenses/LICENSE.txt"] = p.licenseData
 	}
 
-	return buildZip(files, p.normName, p.version, p.tag, p.outputDir)
+	w, err := buildZip(files, p.normName, p.version, p.tag, p.outputDir)
+	if err != nil {
+		return BuiltWheel{}, err
+	}
+	w.Metadata = p.metadata
+	return w, nil
 }
 
 // buildZip constructs the wheel zip archive.

@@ -19,6 +19,23 @@ import (
 
 const defaultPyPIURL = "https://upload.pypi.org/legacy/"
 
+// metaHeaderToFormField maps METADATA RFC 822 header names to the
+// corresponding PyPI legacy-upload multipart form field names.  Headers not
+// present in this map (Metadata-Version, Name, Version, …) are covered by
+// the fixed identity fields already written before this lookup is used.
+// Classifier and Project-URL may appear multiple times; each occurrence
+// produces its own form field entry (standard multipart repeated-field
+// semantics).
+var metaHeaderToFormField = map[string]string{
+	"Summary":                  "summary",
+	"Keywords":                 "keywords",
+	"Classifier":               "classifiers",
+	"Project-URL":              "project_urls",
+	"License-Expression":       "license_expression",
+	"Requires-Python":          "requires_python",
+	"Description-Content-Type": "description_content_type",
+}
+
 // Upload sends a built wheel to PyPI using the legacy multipart upload API.
 // token is the value returned by MintToken (GOWHEELS_PYPI_TOKEN or OIDC-minted).
 // pypiURL defaults to the public PyPI endpoint when empty.
@@ -75,6 +92,11 @@ func Upload(ctx context.Context, w wheel.BuiltWheel, token, pypiURL string) erro
 
 // buildUploadForm constructs the multipart body for a PyPI legacy upload.
 // It returns the body buffer, content-type header value, and any error.
+//
+// PyPI's legacy endpoint reads metadata from the multipart form fields, not
+// from the METADATA file embedded in the wheel.  Every metadata field must
+// therefore be mirrored here; omitted fields are stored as empty on PyPI
+// regardless of the wheel's METADATA content.
 func buildUploadForm(w wheel.BuiltWheel, sha2, blake2 []byte) (*bytes.Buffer, string, error) {
 	pkgName, version, err := parseWheelFilename(w.Filename)
 	if err != nil {
@@ -84,7 +106,10 @@ func buildUploadForm(w wheel.BuiltWheel, sha2, blake2 []byte) (*bytes.Buffer, st
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
 
-	fields := [][2]string{
+	// Identity, file-type, and digest fields come first.
+	// sha2_digest is the canonical field name PyPI stores for SHA-256.
+	// blake2_256_digest is required for Metadata-Version 2.4 uploads.
+	fixed := [][2]string{
 		{":action", "file_upload"},
 		{"metadata_version", "2.4"},
 		{"name", pkgName},
@@ -92,13 +117,19 @@ func buildUploadForm(w wheel.BuiltWheel, sha2, blake2 []byte) (*bytes.Buffer, st
 		{"filetype", "bdist_wheel"},
 		{"pyversion", "py3"},
 		{"protocol_version", "1"},
-		{"requires_python", ">=3.9"},
-		// sha2_digest is the canonical field name PyPI stores for SHA-256.
-		// blake2_256_digest is required for Metadata-Version 2.4 uploads.
 		{"sha2_digest", hex.EncodeToString(sha2)},
 		{"blake2_256_digest", hex.EncodeToString(blake2)},
 	}
-	for _, f := range fields {
+	for _, f := range fixed {
+		if err := mw.WriteField(f[0], f[1]); err != nil {
+			return nil, "", fmt.Errorf("building upload form: %w", err)
+		}
+	}
+
+	// Mirror all metadata fields from the wheel's METADATA file.  Classifier
+	// and Project-URL may appear multiple times; each becomes its own form
+	// field with the same key (standard multipart semantics).
+	for _, f := range metadataFormFields(w.Metadata) {
 		if err := mw.WriteField(f[0], f[1]); err != nil {
 			return nil, "", fmt.Errorf("building upload form: %w", err)
 		}
@@ -137,6 +168,31 @@ func parseWheelFilename(filename string) (name, version string, err error) {
 		return "", "", fmt.Errorf("invalid wheel filename: %q", filename)
 	}
 	return parts[0], parts[1], nil
+}
+
+// metadataFormFields parses a wheel METADATA RFC 822 text and returns the
+// corresponding PyPI legacy-upload multipart form fields. Headers not in
+// metaHeaderToFormField are skipped; Classifier and Project-URL may appear
+// multiple times and each produces its own entry.
+func metadataFormFields(metaText string) [][2]string {
+	// RFC 822: the first blank line separates headers from the body.
+	headerBlock, body, _ := strings.Cut(metaText, "\n\n")
+
+	fields := make([][2]string, 0, len(metaHeaderToFormField)+1)
+	for _, line := range strings.Split(headerBlock, "\n") {
+		k, v, ok := strings.Cut(line, ": ")
+		if !ok {
+			continue
+		}
+		if formKey, known := metaHeaderToFormField[k]; known {
+			fields = append(fields, [2]string{formKey, v})
+		}
+	}
+
+	if strings.TrimSpace(body) != "" {
+		fields = append(fields, [2]string{"description", body})
+	}
+	return fields
 }
 
 func uploadError(status int, pkgName string) string {
