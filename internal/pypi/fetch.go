@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -34,6 +36,21 @@ type PackageInfo struct {
 	// but is still accessible via the JSON API.
 	Yanked       bool   `json:"yanked"`
 	YankedReason string `json:"yanked_reason"`
+}
+
+// IsGitHostingURL reports whether rawURL belongs to a known Git-hosting
+// domain (github.com, gitlab.com, codeberg.org) where /issues and
+// /releases are standard sidebar paths.
+func IsGitHostingURL(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "github.com", "gitlab.com", "codeberg.org":
+		return true
+	}
+	return false
 }
 
 // FetchPackageInfo retrieves metadata for name from the PyPI JSON API.

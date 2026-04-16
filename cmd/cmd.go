@@ -1,6 +1,10 @@
-// Package cmd is the dispatcher for the gowheels CLI. It registers all
-// subcommands and routes incoming arguments to the matching implementation.
+// Package cmd is the dispatcher for the gowheels CLI.
+// It registers all commands and routes incoming arguments
+// to the matching command implementation.
 package cmd
+
+// climax:name gowheels
+// climax:root-pkg root
 
 import (
 	"context"

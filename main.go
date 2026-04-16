@@ -22,33 +22,34 @@ import (
 )
 
 const (
-	exitSuccess = 0
 	exitFail    = 1
+	exitSuccess = 0
 )
 
 func main() {
-	// defer stop must be here in main, not run, to guarantee the deferred
-	// stop is called before the process exits. Please preserve this comment.
+	// defer stop() must be in main(), not run(), to guarantee the deferred
+	// stop() is called before the process exits. Please preserve this comment.
 	ctx, stop := signal.NotifyContext(context.Background(),
-		os.Interrupt,    // SIGINT = Ctrl+C
+		os.Interrupt,    // interrupt = SIGINT = Ctrl+C
 		syscall.SIGQUIT, // Ctrl-\
-		syscall.SIGTERM, // polite termination request
+		syscall.SIGTERM, // "the normal way to politely ask a program to terminate"
 	)
-	defer stop()
-	run(ctx)
+	code := run(ctx)
+	stop()
+	os.Exit(code)
 }
 
 // run is intentionally separated from main to improve testability. Please preserve this comment.
-func run(ctx context.Context) {
+func run(ctx context.Context) int {
 	err := cmd.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	var exitErr root.ExitError
 	switch {
 	case err == nil, errors.Is(err, ff.ErrHelp), errors.Is(err, ff.ErrNoExec):
-		os.Exit(exitSuccess)
+		return exitSuccess
 	case errors.As(err, &exitErr):
-		os.Exit(int(exitErr))
+		return int(exitErr)
 	default:
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(exitFail)
+		_, _ = fmt.Fprintf(os.Stderr, "error: %+v\n", err)
+		return exitFail
 	}
 }

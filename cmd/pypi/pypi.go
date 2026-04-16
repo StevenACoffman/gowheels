@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
-	"strings"
 
 	"github.com/peterbourgon/ff/v4"
 
@@ -302,7 +300,7 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 		return fmt.Errorf("resolving version: %w", err)
 	}
 
-	// Python package version may differ (e.g. custom pre-release labelling).
+	// Python package version may differ (e.g. custom pre-release labeling).
 	pyVer := ver
 	if cfg.PyVersion != "" {
 		pyVer, err = internver.Normalize(cfg.PyVersion)
@@ -459,6 +457,15 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 		ExtraURLs:   extraURLs,
 	}
 
+	// Before committing to the build and upload, show what the metadata looks
+	// like versus what is currently on PyPI. This lets the operator verify the
+	// correction before it is published. The check is non-fatal: a network
+	// failure or a brand-new package that is not yet on PyPI simply skips the
+	// diff and proceeds.
+	if cfg.Upload {
+		cfg.runPreUploadDiff(ctx, logger, pyVer, whlCfg)
+	}
+
 	fmt.Fprintf(cfg.Stdout, "gowheels: building wheels...\n")
 	wheels, err := wheel.BuildAll(whlCfg, binaries)
 	if err != nil {
@@ -570,28 +577,13 @@ func (cfg *Config) buildExtraURLs(meta *repometa.Repo) [][2]string {
 	if meta != nil && meta.Homepage != "" {
 		urls = append(urls, [2]string{"Homepage", meta.Homepage})
 	}
-	if cfg.URL != "" && isGitHostingURL(cfg.URL) {
+	if cfg.URL != "" && pypiclient.IsGitHostingURL(cfg.URL) {
 		urls = append(urls,
 			[2]string{"Bug Tracker", cfg.URL + "/issues"},
 			[2]string{"Changelog", cfg.URL + "/releases"},
 		)
 	}
 	return urls
-}
-
-// isGitHostingURL reports whether rawURL belongs to a known Git-hosting
-// domain (github.com, gitlab.com, codeberg.org) where /issues and
-// /releases are standard sidebar links.
-func isGitHostingURL(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(u.Hostname()) {
-	case "github.com", "gitlab.com", "codeberg.org":
-		return true
-	}
-	return false
 }
 
 // dryRun prints what would be built without doing any work.
@@ -607,6 +599,63 @@ func (cfg *Config) dryRun(plats []platforms.Platform, pyVer string) error {
 		}
 	}
 	return nil
+}
+
+// runPreUploadDiff fetches the latest release metadata from PyPI and prints a
+// unified diff between that and the METADATA that would be embedded in the
+// wheels about to be uploaded. The diff is purely informational — it shows
+// what the upload will correct relative to the current published state.
+//
+// The call is non-fatal: if the package does not yet exist on PyPI (first
+// release) or if the network is unavailable, a debug-level message is logged
+// and the upload proceeds normally.
+func (cfg *Config) runPreUploadDiff(
+	ctx context.Context,
+	logger *slog.Logger,
+	pyVer string,
+	whlCfg wheel.Config,
+) {
+	normName := wheel.NormalizeName(whlCfg.RawName)
+	if whlCfg.PackageName != "" {
+		normName = wheel.NormalizeName(whlCfg.PackageName)
+	}
+
+	remote, err := pypiclient.FetchPackageInfo(ctx, normName, "")
+	if err != nil {
+		logger.DebugContext(ctx,
+			"pre-upload metadata diff skipped (package not yet on PyPI or network unavailable)",
+			"error", err)
+		return
+	}
+
+	localText := wheel.BuildMetadataText(whlCfg, pyVer, wheel.PlatformIndependentClassifiers(pyVer))
+	logger.DebugContext(ctx, "local METADATA to be embedded in wheels", "text", localText)
+
+	// Normalize the remote version to pyVer before diffing. The version field
+	// will always differ between a new upload and the current published release,
+	// which is expected and not a "correction". Normalizing it here means the
+	// diff only surfaces meaningful metadata differences (summary, license,
+	// keywords, URLs) — the fields the upload can actually improve.
+	remoteForDiff := *remote
+	remoteForDiff.Version = pyVer
+	remoteText := pypiclient.RenderAsMetadata(&remoteForDiff)
+
+	diff := pypiclient.UnifiedDiff(
+		fmt.Sprintf("local (gowheels pypi v%s)", pyVer),
+		fmt.Sprintf("remote (PyPI %s v%s → normalized to v%s)", normName, remote.Version, pyVer),
+		pypiclient.TruncateReadmeBody(localText),
+		pypiclient.TruncateReadmeBody(remoteText),
+	)
+
+	fmt.Fprintf(cfg.Stdout, "gowheels: metadata diff (local v%s vs PyPI %s v%s):\n",
+		pyVer, normName, remote.Version)
+	if diff == "" {
+		fmt.Fprintf(cfg.Stdout, "  no differences — metadata matches the current PyPI release\n")
+		return
+	}
+	fmt.Fprint(cfg.Stdout, diff)
+	fmt.Fprintf(cfg.Stdout,
+		"gowheels: uploading will correct the above metadata for %s\n", normName)
 }
 
 // inferMode determines the binary source mode from explicit --mode or from

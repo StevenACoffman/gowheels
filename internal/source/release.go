@@ -3,6 +3,7 @@ package source
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -39,6 +40,18 @@ type ghRelease struct {
 type ghAsset struct {
 	Name               string `json:"name"`
 	BrowserDownloadURL string `json:"browser_download_url"`
+}
+
+// httpStatusError is returned by ghGet for non-2xx responses so callers can
+// branch on the specific status code without parsing the error string.
+type httpStatusError struct {
+	StatusCode int
+	URL        string
+	Body       []byte
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("GitHub API %s returned %d: %s", e.URL, e.StatusCode, e.Body)
 }
 
 // NewReleaseSource creates a ReleaseSource. repo must be "owner/name". version
@@ -188,11 +201,13 @@ func (s *ReleaseSource) matchAsset(
 }
 
 func (s *ReleaseSource) fetchRelease(ctx context.Context) (*ghRelease, error) {
+	// Normalise tag so it is available in error messages after the branch.
+	tag := s.version
 	var apiURL string
-	if s.version == "" || s.version == "latest" {
+	if tag == "" || tag == "latest" {
 		apiURL = fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", s.repo)
+		tag = "" // sentinel: caller requested latest, not a specific tag
 	} else {
-		tag := s.version
 		if !strings.HasPrefix(tag, "v") {
 			tag = "v" + tag
 		}
@@ -201,6 +216,10 @@ func (s *ReleaseSource) fetchRelease(ctx context.Context) (*ghRelease, error) {
 
 	data, err := s.ghGet(ctx, apiURL)
 	if err != nil {
+		var httpErr *httpStatusError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+			return nil, s.releaseNotFoundError(tag)
+		}
 		return nil, fmt.Errorf("fetching release: %w", err)
 	}
 
@@ -212,6 +231,38 @@ func (s *ReleaseSource) fetchRelease(ctx context.Context) (*ghRelease, error) {
 		return nil, fmt.Errorf("GitHub release has no tag_name (repo: %s)", s.repo)
 	}
 	return &rel, nil
+}
+
+// releaseNotFoundError returns a diagnostic error with specific remediation
+// steps when the GitHub Releases API returns 404 for s.repo.
+// tag is the normalised tag (e.g. "v0.5.0"), or "" when the latest release
+// was requested.
+func (s *ReleaseSource) releaseNotFoundError(tag string) error {
+	if tag == "" {
+		return fmt.Errorf(
+			"no GitHub releases found for %s\n\n"+
+				"  No releases have been published yet.\n"+
+				"  Create the first release with GoReleaser:\n\n"+
+				"    git tag -a v0.1.0 -m \"Release v0.1.0\"\n"+
+				"    git push origin v0.1.0\n"+
+				"    export GITHUB_TOKEN=<your-token>\n"+
+				"    goreleaser release --clean",
+			s.repo,
+		)
+	}
+	return fmt.Errorf(
+		"no GitHub release found for %s at tag %s\n\n"+
+			"  The git tag exists but no GitHub release has been published for it.\n"+
+			"  GoReleaser creates the release and attaches the binary archives\n"+
+			"  that gowheels needs — run it against the existing tag:\n\n"+
+			"    git push origin %s    # skip if already pushed\n"+
+			"    export GITHUB_TOKEN=<your-token>\n"+
+			"    goreleaser release --clean\n\n"+
+			"  Then re-run: gowheels pypi --repo %s --version %s",
+		s.repo, tag,
+		tag,
+		s.repo, tag,
+	)
 }
 
 func (s *ReleaseSource) ghGet(ctx context.Context, url string) ([]byte, error) {
@@ -235,7 +286,7 @@ func (s *ReleaseSource) ghGet(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("reading GitHub API response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub API %s returned %d: %s", url, resp.StatusCode, string(body))
+		return nil, &httpStatusError{StatusCode: resp.StatusCode, URL: url, Body: body}
 	}
 	return body, nil
 }

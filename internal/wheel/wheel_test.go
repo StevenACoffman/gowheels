@@ -403,6 +403,38 @@ func TestBuildAll_Metadata24Fields(t *testing.T) {
 }
 
 // TestDevelopmentStatus verifies the PEP 440 version → trove classifier mapping.
+func TestPlatformIndependentClassifiers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		version string
+		wantDev string
+	}{
+		{"1.0.0", "Development Status :: 5 - Production/Stable"},
+		{"1.0.0b1", "Development Status :: 4 - Beta"},
+		{"1.0.0a1", "Development Status :: 3 - Alpha"},
+		{"1.0.0.dev1", "Development Status :: 2 - Pre-Alpha"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.version, func(t *testing.T) {
+			t.Parallel()
+			got := wheel.PlatformIndependentClassifiers(tt.version)
+			if len(got) != 3 {
+				t.Fatalf("PlatformIndependentClassifiers(%q) = %v (want 3 entries)", tt.version, got)
+			}
+			if got[0] != tt.wantDev {
+				t.Errorf("[0] = %q, want %q", got[0], tt.wantDev)
+			}
+			if got[1] != "Environment :: Console" {
+				t.Errorf("[1] = %q, want Environment :: Console", got[1])
+			}
+			if got[2] != "Programming Language :: Python :: 3" {
+				t.Errorf("[2] = %q, want Programming Language :: Python :: 3", got[2])
+			}
+		})
+	}
+}
+
 func TestDevelopmentStatus(t *testing.T) {
 	for _, tt := range []struct {
 		version string

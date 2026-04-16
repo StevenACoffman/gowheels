@@ -124,6 +124,19 @@ func DevelopmentStatus(version string) string {
 	}
 }
 
+// PlatformIndependentClassifiers returns the trove classifiers that every
+// gowheels-built wheel carries regardless of target platform: a version-derived
+// Development Status, the Console environment, and Python 3 language. OS-specific
+// classifiers ("Operating System :: …") are platform-dependent and are added
+// separately by BuildAll from the resolved binary list.
+func PlatformIndependentClassifiers(version string) []string {
+	return []string{
+		DevelopmentStatus(version),
+		"Environment :: Console",
+		"Programming Language :: Python :: 3",
+	}
+}
+
 // ValidateLicenseExpression reports whether expr is a well-formed SPDX
 // expression for use in the Metadata-Version 2.4 License-Expression field.
 //
@@ -162,6 +175,47 @@ func NormalizeName(name string) string {
 	return strings.ToLower(normalizeRe.ReplaceAllString(name, "_"))
 }
 
+// BuildMetadataText returns the METADATA content that BuildAll would embed in a
+// wheel without requiring any binaries. classifiers should be the
+// platform-independent set; OS classifiers depend on which binaries are
+// uploaded and must be omitted when calling this for comparison purposes.
+//
+// All Project-URLs (primary Repository from cfg.URL plus cfg.ExtraURLs) are
+// sorted alphabetically so the output is deterministic and diff-friendly.
+// This sort applies only here; BuildAll preserves its existing emission order.
+func BuildMetadataText(cfg Config, version string, classifiers []string) string {
+	normName := NormalizeName(cfg.RawName)
+	if cfg.PackageName != "" {
+		normName = NormalizeName(cfg.PackageName)
+	}
+	readmeContent, readmeContentType := resolveReadme(cfg.ReadmePath)
+
+	// Collect all Project-URL entries (Repository + extras) and sort by label
+	// so the output is stable regardless of cfg.ExtraURLs insertion order.
+	allURLs := make([][2]string, 0, 1+len(cfg.ExtraURLs))
+	if cfg.URL != "" {
+		allURLs = append(allURLs, [2]string{"Repository", cfg.URL})
+	}
+	allURLs = append(allURLs, cfg.ExtraURLs...)
+	slices.SortFunc(allURLs, func(a, b [2]string) int {
+		return strings.Compare(a[0], b[0])
+	})
+
+	return buildMetadata(metadataParams{
+		name:              normName,
+		version:           version,
+		summary:           cfg.Summary,
+		url:               "", // included in allURLs to preserve sorted order
+		licenseExpr:       cfg.LicenseExpr,
+		readme:            readmeContent,
+		readmeContentType: readmeContentType,
+		hasLicense:        false, // no license file available without binaries
+		keywords:          cfg.Keywords,
+		classifiers:       classifiers,
+		extraURLs:         allURLs,
+	})
+}
+
 // BuildAll builds one wheel per WheelTag across all binaries. A Linux binary
 // with two wheel tags (manylinux + musllinux) produces two wheels from the
 // same bytes without re-reading the source.
@@ -187,12 +241,7 @@ func BuildAll(cfg Config, binaries []source.Binary) ([]BuiltWheel, error) {
 	}
 
 	// Build automatic trove classifiers from version and platforms.
-	autoClassifiers := []string{
-		DevelopmentStatus(cfg.Version),
-		"Environment :: Console",
-		"Programming Language :: Python :: 3",
-	}
-	autoClassifiers = append(autoClassifiers, osClassifiers(binaries)...)
+	autoClassifiers := append(PlatformIndependentClassifiers(cfg.Version), osClassifiers(binaries)...)
 	allClassifiers := append(autoClassifiers, cfg.Classifiers...)
 
 	// Read optional files once, shared across all wheels.

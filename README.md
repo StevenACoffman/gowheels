@@ -50,7 +50,7 @@ The most commonly useful env vars:
 | Env var | Flag | Notes |
 |---------|------|-------|
 | `GOWHEELS_PYPI_TOKEN` | `--pypi-token` | PyPI API token; preferred over OIDC for local runs |
-| `GOWHEELS_GITHUB_TOKEN` | `--github-token` | GitHub token; avoids API rate limits in release mode |
+| `GOWHEELS_GITHUB_TOKEN` | `--github-token` | GitHub token; avoids API rate limits in release mode. `GITHUB_TOKEN` is also read as a fallback (set automatically by GitHub Actions) |
 | `GOWHEELS_PYPI_URL` | `--pypi-url` | Override the PyPI upload endpoint (e.g. TestPyPI) |
 | `GOWHEELS_VERSION` | `--version` | Useful in CI to avoid running `git describe` |
 | `GOWHEELS_DRY_RUN` | `--dry-run` | Set to any non-empty value to enable dry-run mode |
@@ -121,6 +121,23 @@ This publishes to PyPI as `mytool-bin` but installs a `mytool` command.
 gowheels pypi --name mytool --repo owner/mytool
 # Wheels written to dist/; nothing uploaded.
 ```
+
+### Metadata auto-population from GitHub
+
+When `--repo owner/name` is set, gowheels calls the GitHub API before building wheels and uses the repository metadata to fill in fields that were not provided explicitly:
+
+| Wheel field | Source | When applied |
+|-------------|--------|--------------|
+| `Summary` | GitHub repository description | Only if `--summary` is not set |
+| `License-Expression` | GitHub detected SPDX identifier | Only if `--license-expr` is not set |
+| `Project-URL: Repository` | GitHub `html_url` | Only if `--url` is not set and not found in `go.mod` |
+| `Keywords` | GitHub repository topics | Always (no override flag for `pypi`) |
+
+The GitHub API call is best-effort — a failure (network error, rate limit, empty description) is logged as a warning and does not abort the build. Pass `--debug` to see the full API response.
+
+**README auto-detection:** gowheels reads the first of `README.md`, `README.rst`, `README.txt`, `README` found in the current working directory and embeds it as the wheel's long description. Run from the repository root, or pass `--readme <path>` explicitly.
+
+> **Important:** PyPI does not allow updating metadata after a version is published. If a wheel was uploaded with an empty summary or no README, the only options are to delete the release on PyPI and re-upload, or to publish a new version. Run `gowheels pypidiff` to compare local metadata against what is live on PyPI before and after uploading.
 
 ### Binary source modes
 
@@ -204,12 +221,12 @@ env:
 |------|---------|-------------|
 | `--version` | git tag | Version in semver or PEP 440 format |
 | `--py-version` | `--version` | Override the Python package version independently |
-| `--summary` | | One-line package description |
-| `--license-expr` | `MIT` | SPDX license expression |
+| `--summary` | GitHub description | One-line package description (auto-populated from GitHub when `--repo` is set) |
+| `--license-expr` | GitHub SPDX / `MIT` | SPDX license expression (auto-populated from GitHub when `--repo` is set) |
 | `--license` | | Path to license file; bundled as `dist-info/licenses/LICENSE.txt` |
-| `--readme` | auto-detect | Path to README (auto-detects `README.md`, `.rst`, `.txt`) |
+| `--readme` | auto-detect | Path to README (auto-detects `README.md`, `.rst`, `.txt` in current directory) |
 | `--no-readme` | | Disable README auto-detection |
-| `--url` | | Repository URL added as `Project-URL` in METADATA |
+| `--url` | go.mod / GitHub | Repository URL added as `Project-URL` in METADATA |
 
 **Build and output**
 
@@ -229,7 +246,7 @@ env:
 | `--repo` | | GitHub repository in `owner/name` format |
 | `--assets` | | Comma-separated explicit asset name overrides |
 | `--cache` | `$XDG_CACHE_HOME/gowheels` | Local cache directory for downloaded archives |
-| `--github-token` | | GitHub personal access token; env var: `GOWHEELS_GITHUB_TOKEN` (avoids API rate limits) |
+| `--github-token` | | GitHub personal access token; env vars: `GOWHEELS_GITHUB_TOKEN`, `GITHUB_TOKEN` (fallback) |
 
 **Local mode** (`--artifact` infers this mode)
 
@@ -244,6 +261,69 @@ env:
 | `--package` | `.` | Go package path to build |
 | `--mod-dir` | `.` | Directory containing `go.mod` |
 | `--ldflags` | `-s` | Go linker flags |
+
+---
+
+## pypidiff — compare local metadata against PyPI
+
+Assembles the same metadata that `gowheels pypi` would write, fetches the current metadata from PyPI's JSON API, and reports any field-level differences. Useful for verifying a release before uploading, diagnosing why a PyPI project page looks wrong, or confirming that metadata was correctly updated after re-publishing.
+
+Exit codes: `0` no differences, `1` at least one field differs, `2` invocation error.
+
+### Examples
+
+**Check whether the current directory's metadata matches the latest PyPI release:**
+
+```sh
+gowheels pypidiff --name mytool --repo owner/mytool
+```
+
+**Compare against a specific version:**
+
+```sh
+gowheels pypidiff --name mytool --repo owner/mytool --version 1.2.3
+```
+
+**When the PyPI package name differs from the binary name:**
+
+```sh
+gowheels pypidiff --name mytool --package-name mytool-bin --repo owner/mytool
+```
+
+**Use in CI to assert metadata is correct after publishing:**
+
+```sh
+gowheels pypi --name mytool --repo owner/mytool --upload
+gowheels pypidiff --name mytool --repo owner/mytool   # exits 1 if anything differs
+```
+
+### Fields compared
+
+| Field | Local source | Notes |
+|-------|-------------|-------|
+| `Summary` | `--summary` or GitHub description | |
+| `License-Expression` | `--license-expr` or GitHub SPDX | |
+| `Keywords` | GitHub topics | |
+| `Requires-Python` | hardcoded `>=3.9` | |
+| `Classifiers` | auto-generated (Development Status, Environment, Programming Language) | OS classifiers excluded — they depend on build targets and cannot be predicted |
+| `Project-URLs` | go.mod + GitHub; key comparison is case-insensitive | |
+| `Description` | README file (presence, content-type, byte-count) | Full content is not diffed — use a dedicated diff tool if exact content matters |
+
+### All flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--name` | *(required)* | Binary name / PyPI package name |
+| `--package-name` | `--name` | Python package name on PyPI when it differs from binary name |
+| `--summary` | GitHub description | One-line description (auto-populated from GitHub when `--repo` is set) |
+| `--license-expr` | GitHub SPDX | SPDX license expression |
+| `--url` | go.mod / GitHub | Project URL |
+| `--readme` | auto-detect | Path to README for description comparison |
+| `--no-readme` | | Treat local long description as absent |
+| `--version` | latest | PyPI release version to compare against |
+| `--repo` | | GitHub repo (`owner/name`) for metadata auto-population |
+| `--github-token` | | GitHub personal access token; env vars: `GOWHEELS_GITHUB_TOKEN`, `GITHUB_TOKEN` |
+| `--mod-dir` | `.` | Directory containing `go.mod` for URL auto-detection |
 
 ---
 
@@ -345,7 +425,7 @@ jobs:
 | `--tag` | `latest` | npm dist-tag to publish under |
 | `--provenance` | | Publish with npm provenance attestation (requires CI) |
 | `--repository` | | Repository URL for `package.json` |
-| `--readme` | | Path to README copied into the root package |
+| `--readme` | auto-detect | Path to README copied into the root package |
 | `--no-readme` | | Disable README inclusion |
 
 ---
@@ -372,6 +452,19 @@ When `--version` is omitted, gowheels runs `git describe --tags --exact-match` a
 **`go install` gives "no Go files in …"**
 You need Go 1.23+. Run `go version` to check.
 
+**Summary, README, or keywords are empty on the PyPI project page**
+
+These fields are written into the wheel at build time — they cannot be updated after a version is published. Common causes:
+
+- `--summary` was not set and `--repo` was not set (or the GitHub repository description is blank). Run with `--debug` to see which fields were auto-populated.
+- The README file was not found. gowheels looks for `README.md`, `README.rst`, `README.txt`, and `README` in the *current working directory* when the command is run. Run from the repository root, or use `--readme <path>`.
+- A previous upload of the same version number was made without the metadata. PyPI does not allow re-uploading the same version. Delete the release at `https://pypi.org/manage/project/<name>/releases/` and re-upload, or bump the version.
+
+Use `gowheels pypidiff --name <name> --repo owner/name` to compare what would be uploaded against what is currently on PyPI.
+
+**PyPI upload fails with 409 / "version already exists"**
+The exact version has already been published. PyPI does not allow overwriting a release or updating its metadata in place. Options: delete the release via the PyPI web interface and re-upload, or publish a new version number.
+
 **PyPI upload fails with 403 Forbidden**
 The package name may already be registered by another account, or your token doesn't have upload scope for it. Check [pypi.org/manage/account/token](https://pypi.org/manage/account/token/).
 
@@ -386,6 +479,9 @@ gowheels polls the registry for each platform package before publishing the root
 
 **`--mode` is required / "cannot infer --mode"**
 You must supply exactly one of: `--repo` (release mode), `--artifact` (local mode), or `--package`/`--mod-dir` (build mode). Supplying flags from multiple modes at once is an error.
+
+**GitHub API rate limit hit**
+Without a token, the GitHub API allows 60 requests per hour per IP. Set `GOWHEELS_GITHUB_TOKEN` or `GITHUB_TOKEN` to a personal access token (no special scopes needed for public repos) to raise the limit to 5,000 per hour.
 
 ---
 
@@ -413,3 +509,9 @@ On Unix, the launcher calls `os.execv` (replaces the Python process entirely —
 The root package's `bin/{name}` is a Node.js script that uses `require.resolve` to find the binary in whichever platform package npm installed, then calls `execFileSync` with `stdio: 'inherit'`. This means the process behaves identically to running the binary directly — exit codes, signals, and stdio all pass through unchanged.
 
 Platform packages carry only `bin/{name}[.exe]` and a `package.json` with `os` and `cpu` fields. npm's optional dependency resolution installs exactly one per machine and skips the rest silently.
+
+## Other commands
+
+**`gowheels man`** — prints the man page for gowheels in roff format to stdout. Pipe to the pager with `gowheels man | man -l -`. Use `--section N` to set the man page section (default: 1).
+
+**`gowheels version`** — prints the gowheels version and the Go toolchain version it was built with.

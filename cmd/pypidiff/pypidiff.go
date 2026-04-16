@@ -1,21 +1,19 @@
 // Package pypidiff implements the "pypidiff" CLI command.
 //
-// It assembles the same metadata that "gowheels pypi" would write into a
-// wheel, fetches the current metadata from PyPI's JSON API, and reports any
-// field-level differences. Exit code 0 means no differences; exit code 1
-// means at least one field differs.
+// It renders the same METADATA that "gowheels pypi" would write into a wheel,
+// fetches the current metadata from PyPI's JSON API, and emits the full local
+// text followed by a unified diff. Exit code 0 means no differences; exit
+// code 1 means at least one field differs.
 package pypidiff
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/url"
 	"os"
-	"slices"
 	"strings"
+	"sync"
 
 	"github.com/peterbourgon/ff/v4"
 
@@ -25,11 +23,6 @@ import (
 	"github.com/StevenACoffman/gowheels/internal/repometa"
 	"github.com/StevenACoffman/gowheels/internal/wheel"
 )
-
-// osClassifierPrefix is the trove classifier prefix for OS entries.
-// These are excluded from diffMetadata comparisons because they depend on
-// which binary platforms were uploaded, which pypidiff cannot know.
-const osClassifierPrefix = "Operating System ::"
 
 // Config holds the configuration for the pypidiff command.
 type Config struct {
@@ -62,24 +55,6 @@ type Config struct {
 	Command *ff.Command
 }
 
-// localMetadata holds the metadata that "gowheels pypi" would write.
-type localMetadata struct {
-	summary           string
-	licenseExpr       string
-	keywords          []string
-	classifiers       []string
-	projectURLs       map[string]string
-	requiresPython    string
-	readme            string
-	readmeContentType string
-}
-
-type fieldDiff struct {
-	field  string
-	local  string
-	remote string
-}
-
 // New creates and registers the pypidiff command with the given parent config.
 func New(parent *root.Config) *Config {
 	var cfg Config
@@ -90,12 +65,18 @@ func New(parent *root.Config) *Config {
 		Name:      "pypidiff",
 		Usage:     "gowheels pypidiff --name <name> [flags]",
 		ShortHelp: "diff local metadata against what is published on PyPI",
-		LongHelp: `Compare the metadata that "gowheels pypi" would generate against
-the current metadata published on PyPI and print any differences.
+		LongHelp: `Print the METADATA that "gowheels pypi" would generate and show a unified
+diff against the current metadata published on PyPI.
 
 Metadata is assembled the same way "gowheels pypi" does: go.mod provides the
 repository URL, GitHub auto-populates summary, license, and keywords (topics)
 when --repo is set, and explicit flags override those defaults.
+
+Output has two sections:
+  1. The full local METADATA text (what would be embedded in the wheel).
+  2. A unified diff of that text against the PyPI-registered metadata.
+     README bodies longer than 512 bytes are truncated in the diff to keep
+     output readable; the full body appears in section 1.
 
 By default the latest PyPI release is compared. Use --version to pin to a
 specific release — useful for verifying that a past upload matches expectations.
@@ -195,8 +176,6 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 
 	cfg.resolveEnvTokens()
 	cfg.resolveURL()
-	ghMeta := cfg.fetchGitHubMeta(ctx, logger)
-	cfg.applyGitHubMeta(ctx, ghMeta, logger)
 
 	pypiName := cfg.Name
 	if cfg.PackageName != "" {
@@ -204,11 +183,12 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 	}
 	normName := wheel.NormalizeName(pypiName)
 
-	logger.DebugContext(ctx, "fetching PyPI package info", "name", normName, "version", cfg.Version)
-	remote, err := pypiclient.FetchPackageInfo(ctx, normName, cfg.Version)
+	// Fetch GitHub metadata and PyPI info concurrently — they are independent.
+	ghMeta, remote, err := cfg.fetchAll(ctx, logger, normName, cfg.Version)
 	if err != nil {
-		return fmt.Errorf("fetching PyPI data: %w", err)
+		return err
 	}
+	cfg.applyGitHubMeta(ctx, ghMeta, logger)
 
 	if remote.Yanked {
 		reason := remote.YankedReason
@@ -219,51 +199,64 @@ func (cfg *Config) exec(ctx context.Context, _ []string) error {
 			normName, remote.Version, reason)
 	}
 
-	local := cfg.buildLocalMetadata(remote, ghMeta)
-
-	diffs := diffMetadata(local, remote)
-	if len(diffs) == 0 {
-		fmt.Fprintf(cfg.Stdout, "pypidiff: %s v%s – no differences\n", normName, remote.Version)
-		return nil
+	// Resolve README path: --no-readme passes "-" to disable auto-detection.
+	readmePath := cfg.ReadmePath
+	if cfg.NoReadme {
+		readmePath = "-"
 	}
 
-	cfg.printDiffs(normName, remote.Version, diffs)
-	return root.ExitError(1)
-}
-
-// buildLocalMetadata assembles the metadata that "gowheels pypi" would write
-// into the wheel for the given PyPI release and GitHub repository state.
-func (cfg *Config) buildLocalMetadata(
-	remote *pypiclient.PackageInfo,
-	ghMeta *repometa.Repo,
-) *localMetadata {
-	var localKeywords []string
+	// Keywords come from GitHub topics, matching pypi command behaviour.
+	var keywords []string
 	if ghMeta != nil {
-		localKeywords = ghMeta.Topics
+		keywords = ghMeta.Topics
 	}
-	localReadme, localReadmeCT := resolveLocalReadme(cfg.ReadmePath, cfg.NoReadme)
-	return &localMetadata{
-		summary:           cfg.Summary,
-		licenseExpr:       cfg.LicenseExpr,
-		keywords:          localKeywords,
-		classifiers:       buildClassifiers(remote.Version),
-		projectURLs:       buildProjectURLs(cfg.URL, ghMeta),
-		requiresPython:    ">=3.9",
-		readme:            localReadme,
-		readmeContentType: localReadmeCT,
-	}
-}
 
-// printDiffs writes the diff report to cfg.Stdout.
-func (cfg *Config) printDiffs(normName, version string, diffs []fieldDiff) {
-	fmt.Fprintf(cfg.Stdout, "pypidiff: %s v%s – %d field(s) differ\n\n",
-		normName, version, len(diffs))
-	for _, d := range diffs {
-		fmt.Fprintf(cfg.Stdout, "  %s:\n", d.field)
-		printDiffValue(cfg.Stdout, "local", d.local)
-		printDiffValue(cfg.Stdout, "remote", d.remote)
+	// Build the wheel.Config that "gowheels pypi" would use for this package.
+	// remote.Version is used as the version because pypidiff compares against a
+	// specific published release (Development Status classifier is version-dependent).
+	whlCfg := wheel.Config{
+		RawName:     cfg.Name,
+		PackageName: cfg.PackageName,
+		Summary:     cfg.Summary,
+		URL:         cfg.URL,
+		LicenseExpr: cfg.LicenseExpr,
+		ReadmePath:  readmePath,
+		Keywords:    keywords,
+		ExtraURLs:   buildExtraURLPairs(cfg.URL, ghMeta),
+	}
+	classifiers := buildClassifiers(remote.Version)
+	localText := wheel.BuildMetadataText(whlCfg, remote.Version, classifiers)
+
+	// Print the full local METADATA — this is what gowheels pypi would have
+	// embedded in the wheel.
+	fmt.Fprintf(cfg.Stdout, "=== local METADATA (gowheels pypi would generate) ===\n")
+	fmt.Fprint(cfg.Stdout, localText)
+	if !strings.HasSuffix(localText, "\n") {
 		fmt.Fprintln(cfg.Stdout)
 	}
+	fmt.Fprintln(cfg.Stdout)
+
+	// Render PyPI-registered metadata in the same RFC 822 format.
+	remoteText := pypiclient.RenderAsMetadata(remote)
+
+	// Truncate README bodies before diffing so the output stays readable.
+	// The full README was already printed in the local section above.
+	localDiff := pypiclient.TruncateReadmeBody(localText)
+	remoteDiff := pypiclient.TruncateReadmeBody(remoteText)
+
+	fmt.Fprintf(cfg.Stdout, "=== diff (local vs PyPI %s v%s) ===\n", normName, remote.Version)
+	diff := pypiclient.UnifiedDiff(
+		"local (gowheels pypi)",
+		fmt.Sprintf("remote (PyPI %s v%s)", normName, remote.Version),
+		localDiff,
+		remoteDiff,
+	)
+	if diff == "" {
+		fmt.Fprintf(cfg.Stdout, "no differences\n")
+		return nil
+	}
+	fmt.Fprint(cfg.Stdout, diff)
+	return root.ExitError(1)
 }
 
 // resolveEnvTokens reads the GitHub token from the environment when it was
@@ -311,6 +304,37 @@ func (cfg *Config) fetchGitHubMeta(ctx context.Context, logger *slog.Logger) *re
 	return meta
 }
 
+// fetchAll retrieves GitHub metadata and PyPI package info concurrently.
+// The two calls are independent; running them in parallel halves the total
+// round-trip time on typical network conditions.
+func (cfg *Config) fetchAll(
+	ctx context.Context,
+	logger *slog.Logger,
+	normName, version string,
+) (*repometa.Repo, *pypiclient.PackageInfo, error) {
+	var (
+		ghMeta    *repometa.Repo
+		remote    *pypiclient.PackageInfo
+		remoteErr error
+	)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		ghMeta = cfg.fetchGitHubMeta(ctx, logger)
+	}()
+	go func() {
+		defer wg.Done()
+		logger.DebugContext(ctx, "fetching PyPI package info", "name", normName, "version", version)
+		remote, remoteErr = pypiclient.FetchPackageInfo(ctx, normName, version)
+	}()
+	wg.Wait()
+	if remoteErr != nil {
+		return nil, nil, fmt.Errorf("fetching PyPI data: %w", remoteErr)
+	}
+	return ghMeta, remote, nil
+}
+
 // applyGitHubMeta fills empty metadata fields from the GitHub repo response.
 func (cfg *Config) applyGitHubMeta(ctx context.Context, meta *repometa.Repo, logger *slog.Logger) {
 	if meta == nil {
@@ -318,20 +342,11 @@ func (cfg *Config) applyGitHubMeta(ctx context.Context, meta *repometa.Repo, log
 	}
 	if cfg.Summary == "" && meta.Description != "" {
 		cfg.Summary = meta.Description
-		logger.InfoContext(
-			ctx,
-			"auto-populated from GitHub",
-			"field",
-			"summary",
-			"value",
-			cfg.Summary,
-		)
+		logger.InfoContext(ctx, "auto-populated from GitHub", "field", "summary", "value", cfg.Summary)
 	}
 	if cfg.LicenseExpr == "" && meta.LicenseSPDX != "" {
 		cfg.LicenseExpr = meta.LicenseSPDX
-		logger.InfoContext(
-			ctx, "auto-populated from GitHub", "field", "license-expr", "value", cfg.LicenseExpr,
-		)
+		logger.InfoContext(ctx, "auto-populated from GitHub", "field", "license-expr", "value", cfg.LicenseExpr)
 	}
 	if cfg.URL == "" && meta.HTMLURL != "" {
 		cfg.URL = meta.HTMLURL
@@ -339,245 +354,24 @@ func (cfg *Config) applyGitHubMeta(ctx context.Context, meta *repometa.Repo, log
 	}
 }
 
-func diffMetadata(local *localMetadata, remote *pypiclient.PackageInfo) []fieldDiff {
-	var diffs []fieldDiff
-
-	if local.summary != remote.Summary {
-		diffs = append(diffs, fieldDiff{"Summary", local.summary, remote.Summary})
-	}
-	if local.licenseExpr != remote.LicenseExpression {
-		diffs = append(
-			diffs,
-			fieldDiff{"License-Expression", local.licenseExpr, remote.LicenseExpression},
-		)
-	}
-
-	// Keywords: gowheels joins GitHub topics with spaces; PyPI stores them as-is.
-	localKW := strings.Join(local.keywords, " ")
-	if !equalKeywords(localKW, remote.Keywords) {
-		diffs = append(diffs, fieldDiff{"Keywords", localKW, remote.Keywords})
-	}
-
-	if local.requiresPython != remote.RequiresPython {
-		diffs = append(
-			diffs,
-			fieldDiff{"Requires-Python", local.requiresPython, remote.RequiresPython},
-		)
-	}
-
-	// Classifiers: compare platform-independent entries only. OS classifiers
-	// (e.g. "Operating System :: POSIX :: Linux") depend on which binary
-	// platforms were uploaded and cannot be predicted without binaries.
-	remoteClassifiers := filterOSClassifiers(remote.Classifiers)
-	if !slices.Equal(local.classifiers, remoteClassifiers) {
-		diffs = append(diffs, fieldDiff{
-			"Classifiers",
-			formatClassifiers(local.classifiers),
-			formatClassifiers(remoteClassifiers),
-		})
-	}
-
-	if !equalURLMaps(local.projectURLs, remote.ProjectURLs) {
-		diffs = append(diffs, fieldDiff{
-			"Project-URLs",
-			formatURLLines(local.projectURLs),
-			formatURLLines(remote.ProjectURLs),
-		})
-	}
-
-	// Description (long description / README): compare presence, content-type,
-	// and byte-count rather than raw content — README bodies can be thousands
-	// of lines and a full text diff would be unreadable here. Use pypidiff
-	// only to detect whether the README is missing or the wrong type; use a
-	// dedicated diff tool for line-by-line content comparison.
-	localDesc := formatDescriptionSummary(local.readme, local.readmeContentType)
-	remoteDesc := formatDescriptionSummary(remote.Description, remote.DescriptionContentType)
-	if localDesc != remoteDesc {
-		diffs = append(diffs, fieldDiff{"Description", localDesc, remoteDesc})
-	}
-
-	return diffs
-}
-
-// equalKeywords compares two keyword strings after normalising whitespace.
-func equalKeywords(a, b string) bool {
-	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
-}
-
-// equalURLMaps reports whether two Project-URL maps have the same entries,
-// using case-insensitive key comparison.
-func equalURLMaps(a, b map[string]string) bool {
-	norm := func(m map[string]string) map[string]string {
-		n := make(map[string]string, len(m))
-		for k, v := range m {
-			n[strings.ToLower(k)] = v
-		}
-		return n
-	}
-	na, nb := norm(a), norm(b)
-	if len(na) != len(nb) {
-		return false
-	}
-	for k, va := range na {
-		if vb, ok := nb[k]; !ok || va != vb {
-			return false
-		}
-	}
-	return true
-}
-
-// formatURLLines formats a Project-URL map as a sorted newline-separated
-// "Label: URL" string. Callers are responsible for indenting continuation
-// lines in the output.
-func formatURLLines(urls map[string]string) string {
-	if len(urls) == 0 {
-		return "(none)"
-	}
-	keys := make([]string, 0, len(urls))
-	for k := range urls {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	lines := make([]string, 0, len(keys))
-	for _, k := range keys {
-		lines = append(lines, k+": "+urls[k])
-	}
-	return strings.Join(lines, "\n")
-}
-
-// printDiffValue writes a labelled value to w. If value spans multiple lines,
-// continuation lines are indented to align with the first value character.
-// An empty value is displayed as "(empty)".
-func printDiffValue(w io.Writer, label, value string) {
-	prefix := fmt.Sprintf("    %-7s ", label+":")
-	if value == "" {
-		fmt.Fprintf(w, "%s(empty)\n", prefix)
-		return
-	}
-	lines := strings.Split(value, "\n")
-	fmt.Fprintf(w, "%s%s\n", prefix, lines[0])
-	cont := strings.Repeat(" ", len(prefix))
-	for _, line := range lines[1:] {
-		fmt.Fprintf(w, "%s%s\n", cont, line)
-	}
-}
-
 // buildClassifiers returns the platform-independent trove classifiers that
-// "gowheels pypi" always emits for any upload. version is the published PyPI
-// version string, used to derive the Development Status classifier. OS-specific
-// classifiers are omitted because they depend on the binary platforms chosen at
-// upload time.
+// "gowheels pypi" always emits. OS-specific classifiers are omitted because
+// they depend on the binary platforms chosen at upload time.
 func buildClassifiers(version string) []string {
-	return []string{
-		wheel.DevelopmentStatus(version),
-		"Environment :: Console",
-		"Programming Language :: Python :: 3",
-	}
+	return wheel.PlatformIndependentClassifiers(version)
 }
 
-// filterOSClassifiers returns a sorted copy of c with all "Operating System ::"
-// entries removed, so that the remote classifier list is comparable to the
-// local platform-independent set.
-func filterOSClassifiers(c []string) []string {
-	out := make([]string, 0, len(c))
-	for _, cl := range c {
-		if !strings.HasPrefix(cl, osClassifierPrefix) {
-			out = append(out, cl)
-		}
-	}
-	slices.Sort(out)
-	return out
-}
-
-// formatClassifiers formats a sorted classifier slice as a newline-separated
-// string for use in diff output.
-func formatClassifiers(classifiers []string) string {
-	if len(classifiers) == 0 {
-		return "(none)"
-	}
-	return strings.Join(classifiers, "\n")
-}
-
-// resolveLocalReadme reads the README that "gowheels pypi" would embed as the
-// long description. It mirrors the resolveReadme / detectContentType logic in
-// internal/wheel so that pypidiff sees exactly the same content the wheel would
-// contain. Returns ("", "") when no README is present or --no-readme is set.
-func resolveLocalReadme(path string, noReadme bool) (content, contentType string) {
-	if noReadme {
-		return "", ""
-	}
-	if path != "" {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", ""
-		}
-		return string(data), detectReadmeContentType(path)
-	}
-	for _, name := range []string{"README.md", "README.rst", "README.txt", "README"} {
-		data, err := os.ReadFile(name)
-		if err == nil {
-			return string(data), detectReadmeContentType(name)
-		}
-	}
-	return "", ""
-}
-
-// detectReadmeContentType mirrors wheel.detectContentType.
-func detectReadmeContentType(path string) string {
-	lower := strings.ToLower(path)
-	switch {
-	case strings.HasSuffix(lower, ".md"), strings.HasSuffix(lower, ".markdown"):
-		return "text/markdown"
-	case strings.HasSuffix(lower, ".rst"):
-		return "text/x-rst"
-	default:
-		return "text/plain"
-	}
-}
-
-// formatDescriptionSummary returns a human-readable summary of a long
-// description suitable for diff output. Comparing full README bodies would
-// produce unreadable diffs, so we summarise as "<content-type> (<N> bytes)"
-// or "(none)" when absent. A mismatch in presence, content-type, or byte-count
-// signals a meaningful difference worth investigating with a dedicated diff tool.
-func formatDescriptionSummary(content, contentType string) string {
-	if strings.TrimSpace(content) == "" {
-		return "(none)"
-	}
-	ct := contentType
-	if ct == "" {
-		ct = "text/plain"
-	}
-	return fmt.Sprintf("%s (%d bytes)", ct, len(content))
-}
-
-// buildProjectURLs constructs the Project-URL map the same way pypi command
-// does, with "Repository" as the primary entry plus extra URLs from GitHub.
-func buildProjectURLs(repoURL string, meta *repometa.Repo) map[string]string {
-	urls := make(map[string]string)
-	if repoURL != "" {
-		urls["Repository"] = repoURL
-	}
+// buildExtraURLPairs constructs the extra Project-URL entries (beyond
+// Repository) that the pypi command appends. Returns [][2]string for direct
+// use in wheel.Config.ExtraURLs.
+func buildExtraURLPairs(repoURL string, meta *repometa.Repo) [][2]string {
+	var pairs [][2]string
 	if meta != nil && meta.Homepage != "" {
-		urls["Homepage"] = meta.Homepage
+		pairs = append(pairs, [2]string{"Homepage", meta.Homepage})
 	}
-	if repoURL != "" && isGitHostingURL(repoURL) {
-		urls["Bug Tracker"] = repoURL + "/issues"
-		urls["Changelog"] = repoURL + "/releases"
+	if repoURL != "" && pypiclient.IsGitHostingURL(repoURL) {
+		pairs = append(pairs, [2]string{"Bug Tracker", repoURL + "/issues"})
+		pairs = append(pairs, [2]string{"Changelog", repoURL + "/releases"})
 	}
-	return urls
-}
-
-// isGitHostingURL reports whether rawURL belongs to a known Git-hosting
-// domain where /issues and /releases are standard paths.
-func isGitHostingURL(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	switch strings.ToLower(u.Hostname()) {
-	case "github.com", "gitlab.com", "codeberg.org":
-		return true
-	}
-	return false
+	return pairs
 }
